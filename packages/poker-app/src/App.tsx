@@ -51,7 +51,15 @@ function Screen() {
     </Layout>
   )
 
-  // ── Host: show offer QR + pairing progress ────────────────────────────
+  // ── Host online: PeerJS connected, show join QR ───────────────────────
+  if (view === 'host' && pairing.step === 'idle' && qrPayload) return (
+    <Layout title="Let players scan">
+      <QRDisplay value={qrPayload} label="Scan to join" />
+      <button onClick={() => { transport?.leave(); setView('home') }}>Cancel</button>
+    </Layout>
+  )
+
+  // ── Host offline: show offer QR + pairing progress ────────────────────
   if (view === 'host' && pairing.step === 'host-offering' && qrPayload) return (
     <Layout title="Let players scan">
       <QRDisplay value={qrPayload} label={`Guest ${(pairing as { slot: number }).slot + 1} — scan to join`} />
@@ -119,7 +127,15 @@ function Screen() {
     </Layout>
   )
 
-  // ── Connecting / waiting ───────────────────────────────────────────────
+  // ── Host waiting for PeerJS broker to assign peer ID ─────────────────
+  if (view === 'host' && pairing.step === 'idle' && !qrPayload) return (
+    <Layout title="Connecting…">
+      <p style={{ opacity: 0.5 }}>Connecting to PeerJS broker…</p>
+      <button onClick={() => { transport?.leave(); setView('home') }}>Cancel</button>
+    </Layout>
+  )
+
+  // ── Fallback ───────────────────────────────────────────────────────────
   return (
     <Layout title="Connecting…">
       <p style={{ opacity: 0.5 }}>Please wait</p>
