@@ -1,0 +1,25 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body { background: #0f172a; color: #f1f5f9; }
+
+button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  background: #334155;
+  color: #f1f5f9;
+  font-size: 15px;
+  cursor: pointer;
+}
+button:hover { background: #475569; }
+
+input {
+  padding: 10px 14px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #1e293b;
+  color: #f1f5f9;
+  font-size: 15px;
+  width: 220px;
+}
+input:focus { outline: 2px solid #38bdf8; }

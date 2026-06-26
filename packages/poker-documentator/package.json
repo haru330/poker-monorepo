@@ -1,0 +1,6 @@
+{
+  "name": "poker-documentator",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Living documentation package. No runnable code — contains CONTEXT.md, ADRs, and cross-package type contracts."
+}
