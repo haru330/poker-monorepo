@@ -1,0 +1,6 @@
+{
+  "buildCommand": "pnpm --filter poker-app build",
+  "outputDirectory": "packages/poker-app/dist",
+  "installCommand": "pnpm install",
+  "framework": null
+}
