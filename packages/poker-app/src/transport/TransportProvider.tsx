@@ -17,8 +17,10 @@ interface TransportCtx {
   joinFromQR(raw: string, name: string): void
 
   // Offline-only pairing flow
-  scanNextGuest(): void           // host ready to scan guest's answer QR
-  onAnswerScanned(raw: string): void  // host feeds in scanned answer
+  scanNextGuest(): void
+  onAnswerScanned(raw: string): void
+
+  leave(): void  // tear down transport + reset all state
 }
 
 const Ctx = createContext<TransportCtx | null>(null)
@@ -95,7 +97,16 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  // Host signals they are ready to scan the current guest's answer QR
+  function leave() {
+    transport?.leave()
+    setTransport(null)
+    setGameState(null)
+    setQrPayload(null)
+    setPairing({ step: 'idle' })
+    setError(null)
+    setRtcHost(null)
+  }
+
   function scanNextGuest() {
     if (!rtcHost) return
     const slot = pairing.step === 'host-offering' ? (pairing as { slot: number }).slot : 0
@@ -112,7 +123,7 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{
       transport, gameState, pairing, qrPayload, error,
       hostOnline, hostOffline, joinFromQR,
-      scanNextGuest, onAnswerScanned,
+      scanNextGuest, onAnswerScanned, leave,
     }}>
       {children}
     </Ctx.Provider>

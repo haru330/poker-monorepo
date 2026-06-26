@@ -87,9 +87,14 @@ export class PeerHostTransport implements Transport {
       case 'JOIN': {
         const existing = this.state.players.find((p) => p.id === msg.sessionToken)
         if (existing) {
+          // Reconnect — re-associate connection and mark connected
           this.connPid.set(conn.connectionId, msg.sessionToken)
-          this.state = { ...this.state, players: this.state.players.map((p) =>
-            p.id === msg.sessionToken ? { ...p, status: 'connected' } : p) }
+          this.state = {
+            ...this.state,
+            players: this.state.players.map((p) =>
+              p.id === msg.sessionToken ? { ...p, status: 'connected' } : p,
+            ),
+          }
           this.send(conn, { type: 'JOIN_OK', sessionToken: msg.sessionToken })
           this.broadcastState(); return
         }
@@ -211,6 +216,9 @@ export class PeerGuestTransport implements Transport {
           case 'JOIN_REJECTED': opts.onRejected(msg.reason); break
         }
       })
+
+      conn.on('close', () => opts.onRejected('Host left the game'))
+      conn.on('error', () => opts.onRejected('Host left the game'))
     })
 
     this.peer.on('error', (e) => opts.onRejected(String(e)))

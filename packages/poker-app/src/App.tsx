@@ -14,10 +14,18 @@ export default function App() {
 function Screen() {
   const { transport, gameState, pairing, qrPayload, error,
           hostOnline, hostOffline, joinFromQR,
-          scanNextGuest, onAnswerScanned } = useTransport()
+          scanNextGuest, onAnswerScanned, leave } = useTransport()
+
+  function handleLeave() { leave(); setView('home') }
 
   const [view, setView] = useState<'home' | 'host-name' | 'host' | 'join' | 'scan-answer'>('home')
   const [name, setName] = useState(() => localStorage.getItem('poker-username') ?? '')
+  const [roomCodeInput, setRoomCodeInput] = useState('')
+  const [showQR, setShowQR] = useState(false)
+
+  const hasDisconnected = gameState?.players.some((p) => p.status === 'disconnected') ?? false
+  const isOnlineHost = transport?.role === 'host' && qrPayload && pairing.step === 'idle'
+  const isOfflineHost = transport?.role === 'host' && 'offerNext' in transport
 
   // ── Home ──────────────────────────────────────────────────────────────
   if (view === 'home') return (
@@ -39,19 +47,13 @@ function Screen() {
       <Row>
         <button
           disabled={!name.trim()}
-          onClick={() => {
-            hostOnline(name.trim())
-            setView('host')
-          }}
+          onClick={() => { hostOnline(name.trim()); setView('host') }}
         >
           Host Online
         </button>
         <button
           disabled={!name.trim()}
-          onClick={() => {
-            hostOffline(name.trim())
-            setView('host')
-          }}
+          onClick={() => { hostOffline(name.trim()); setView('host') }}
         >
           Host Offline
         </button>
@@ -60,7 +62,7 @@ function Screen() {
     </Layout>
   )
 
-  // ── Join: enter name then scan ─────────────────────────────────────────
+  // ── Join: enter name then scan QR or type room code ───────────────────
   if (view === 'join' && !transport) return (
     <Layout title="Join game">
       <input
@@ -69,101 +71,141 @@ function Screen() {
         onChange={(e) => setName(e.target.value)}
       />
       {name.trim() && (
-        <QRScanner onScan={(raw) => joinFromQR(raw, name.trim())} />
+        <>
+          <QRScanner onScan={(raw) => joinFromQR(raw, name.trim())} />
+          <p style={{ opacity: 0.4, fontSize: 13 }}>— or enter room code —</p>
+          <Row>
+            <input
+              placeholder="ABCD"
+              value={roomCodeInput}
+              maxLength={4}
+              style={{ width: 100, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 4 }}
+              onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
+            />
+            <button
+              disabled={roomCodeInput.length !== 4}
+              onClick={() => joinFromQR(
+                JSON.stringify({ mode: 'peer', peerId: roomCodeInput }),
+                name.trim()
+              )}
+            >
+              Rejoin
+            </button>
+          </Row>
+        </>
       )}
       <button onClick={() => setView('home')}>Back</button>
-    </Layout>
-  )
-
-  // ── Guest: show answer QR for host to scan (offline only) ─────────────
-  if (pairing.step === 'guest-answering' && qrPayload) return (
-    <Layout title="Show this to the host">
-      <QRDisplay value={qrPayload} label="Host scans your screen" />
-      <p style={{ opacity: 0.6, fontSize: 13 }}>Hold still — host is scanning your answer</p>
-    </Layout>
-  )
-
-  // ── Host online: PeerJS connected, show join QR ───────────────────────
-  if (view === 'host' && pairing.step === 'idle' && qrPayload) return (
-    <Layout title="Let players scan">
-      <QRDisplay value={qrPayload} label="Scan to join" />
-      <button onClick={() => { transport?.leave(); setView('home') }}>Cancel</button>
-    </Layout>
-  )
-
-  // ── Host offline: show offer QR + pairing progress ────────────────────
-  if (view === 'host' && pairing.step === 'host-offering' && qrPayload) return (
-    <Layout title="Let players scan">
-      <QRDisplay value={qrPayload} label={`Guest ${(pairing as { slot: number }).slot + 1} — scan to join`} />
-      <Row>
-        <button onClick={scanNextGuest}>Scan guest's answer →</button>
-        <button onClick={() => setView('home')}>Cancel</button>
-      </Row>
-    </Layout>
-  )
-
-  // ── Host: scanning guest's answer QR ──────────────────────────────────
-  if (view === 'host' && pairing.step === 'host-scanning') return (
-    <Layout title="Scan guest's screen">
-      <QRScanner onScan={(raw) => { onAnswerScanned(raw); setView('host') }} />
-    </Layout>
-  )
-
-  // ── Lobby: waiting room, players joined ───────────────────────────────
-  if (gameState && gameState.street === 'preflop' && gameState.players.length > 0
-      && !gameState.currentTurnPlayerId) return (
-    <Layout title={`Room ${gameState.roomCode}`}>
-      <p style={{ opacity: 0.6 }}>Players ({gameState.players.length}/8)</p>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {gameState.players.map((p) => (
-          <li key={p.id} style={{ padding: '6px 0', opacity: p.status === 'connected' ? 1 : 0.4 }}>
-            {p.isHost ? '👑 ' : '• '}{p.name} — {p.chips} chips
-          </li>
-        ))}
-      </ul>
-      {transport?.role === 'host' && (
-        <Row>
-          <button onClick={() => transport.startGame()}>Start Game</button>
-          {view === 'host' && (
-            <button onClick={() => {
-              if (transport && 'offerNext' in transport) {
-                (transport as { offerNext(): void }).offerNext()
-              }
-            }}>+ Add player</button>
-          )}
-        </Row>
-      )}
-    </Layout>
-  )
-
-  // ── In game: minimal state dump ───────────────────────────────────────
-  if (gameState?.currentTurnPlayerId) return (
-    <Layout title={`${gameState.street.toUpperCase()} — ${gameState.roomCode}`}>
-      <p>Community: {gameState.communityCards.map((c) => `${c.rank}${suitSym(c.suit)}`).join(' ') || '—'}</p>
-      <p>Pot: {gameState.pots.reduce((s, p) => s + p.amount, 0)}</p>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {gameState.players.map((p) => (
-          <li key={p.id} style={{ padding: '4px 0', fontWeight: p.id === gameState.currentTurnPlayerId ? 'bold' : 'normal', opacity: p.hasFolded ? 0.4 : 1 }}>
-            {p.name} — {p.chips} chips {p.id === gameState.currentTurnPlayerId ? '◀ acting' : ''}
-          </li>
-        ))}
-      </ul>
     </Layout>
   )
 
   // ── Error ─────────────────────────────────────────────────────────────
   if (error) return (
-    <Layout title="Error">
-      <p style={{ color: '#e74c3c' }}>{error}</p>
-      <button onClick={() => setView('home')}>Back</button>
+    <Layout title={error === 'Host left the game' ? 'Game ended' : 'Error'}>
+      <p style={{ opacity: 0.6 }}>{error}</p>
+      <button onClick={handleLeave}>Back to home</button>
     </Layout>
   )
 
-  // ── Host waiting for PeerJS broker to assign peer ID ─────────────────
-  if (view === 'host' && pairing.step === 'idle' && !qrPayload) return (
+  // ── Host waiting for PeerJS broker ────────────────────────────────────
+  if (view === 'host' && pairing.step === 'idle' && !qrPayload && !gameState) return (
     <Layout title="Connecting…">
       <p style={{ opacity: 0.5 }}>Connecting to PeerJS broker…</p>
-      <button onClick={() => { transport?.leave(); setView('home') }}>Cancel</button>
+      <button onClick={handleLeave}>Cancel</button>
+    </Layout>
+  )
+
+  // ── Guest: show answer QR for host to scan (offline) ──────────────────
+  if (pairing.step === 'guest-answering' && qrPayload) return (
+    <Layout title="Show this to the host">
+      <QRDisplay value={qrPayload} label="Host scans your screen" />
+      <p style={{ opacity: 0.6, fontSize: 13 }}>Hold still — host is scanning your answer</p>
+      <button onClick={handleLeave}>Leave</button>
+    </Layout>
+  )
+
+  // ── Host offline: show offer QR ───────────────────────────────────────
+  if (pairing.step === 'host-offering' && qrPayload) return (
+    <Layout title="Let players scan">
+      <QRDisplay value={qrPayload} label={`Guest ${(pairing as { slot: number }).slot + 1} — scan to join`} />
+      <PlayerList gameState={gameState} />
+      <Row>
+        {gameState && gameState.players.length >= 2 && (
+          <button onClick={() => transport?.startGame()}>Start Game</button>
+        )}
+        <button onClick={scanNextGuest}>Scan guest's answer →</button>
+        <button onClick={handleLeave}>Cancel</button>
+      </Row>
+    </Layout>
+  )
+
+  // ── Host: scanning guest's answer QR ──────────────────────────────────
+  if (pairing.step === 'host-scanning') return (
+    <Layout title="Scan guest's screen">
+      <QRScanner onScan={(raw) => { onAnswerScanned(raw); setView('host') }} />
+      <button onClick={handleLeave}>Leave</button>
+    </Layout>
+  )
+
+  // ── In game ───────────────────────────────────────────────────────────
+  if (gameState?.currentTurnPlayerId) return (
+    <Layout title={`${gameState.street.toUpperCase()}`}>
+      <p style={{ fontSize: 13, opacity: 0.4, letterSpacing: 3 }}>{gameState.roomCode}</p>
+      <p>Community: {gameState.communityCards.map((c) => `${c.rank}${suitSym(c.suit)}`).join(' ') || '—'}</p>
+      <p>Pot: {gameState.pots.reduce((s, p) => s + p.amount, 0)}</p>
+      <ul style={{ listStyle: 'none', padding: 0 }}>
+        {gameState.players.map((p) => (
+          <li key={p.id} style={{ padding: '4px 0', fontWeight: p.id === gameState.currentTurnPlayerId ? 'bold' : 'normal', opacity: p.hasFolded ? 0.4 : p.status === 'disconnected' ? 0.3 : 1 }}>
+            {p.name} — {p.chips} chips
+            {p.id === gameState.currentTurnPlayerId ? ' ◀' : ''}
+            {p.status === 'disconnected' ? ' (disconnected)' : ''}
+          </li>
+        ))}
+      </ul>
+      {transport?.role === 'host' && (
+        <Row>
+          {isOnlineHost && (
+            <button onClick={() => setShowQR((v) => !v)}>
+              {showQR ? 'Hide QR' : 'Show QR'}
+            </button>
+          )}
+          {isOfflineHost && hasDisconnected && (
+            <button onClick={() => (transport as { offerNext(): void }).offerNext()}>
+              Reconnect player
+            </button>
+          )}
+        </Row>
+      )}
+      {showQR && qrPayload && (
+        <QRDisplay value={qrPayload} label={`Room ${gameState.roomCode}`} />
+      )}
+      <button onClick={handleLeave}>Leave game</button>
+    </Layout>
+  )
+
+  // ── Lobby ─────────────────────────────────────────────────────────────
+  if (gameState && gameState.players.length > 0 && !gameState.currentTurnPlayerId) return (
+    <Layout title={`Room ${gameState.roomCode}`}>
+      {/* Online host: always show QR + room code so guests can join */}
+      {isOnlineHost && qrPayload && (
+        <>
+          <p style={{ fontSize: 28, fontWeight: 'bold', letterSpacing: 6 }}>{gameState.roomCode}</p>
+          <QRDisplay value={qrPayload} label="Scan to join" />
+        </>
+      )}
+      <PlayerList gameState={gameState} />
+      {transport?.role === 'host' && (
+        <Row>
+          {gameState.players.length >= 2 && (
+            <button onClick={() => transport.startGame()}>Start Game</button>
+          )}
+          {isOfflineHost && (
+            <button onClick={() => (transport as { offerNext(): void }).offerNext()}>
+              {hasDisconnected ? 'Reconnect player' : 'Add player'}
+            </button>
+          )}
+        </Row>
+      )}
+      <button onClick={handleLeave}>Leave</button>
     </Layout>
   )
 
@@ -171,7 +213,29 @@ function Screen() {
   return (
     <Layout title="Connecting…">
       <p style={{ opacity: 0.5 }}>Please wait</p>
+      <button onClick={handleLeave}>Leave</button>
     </Layout>
+  )
+}
+
+// ── Shared player list ─────────────────────────────────────────────────────
+
+function PlayerList({ gameState }: { gameState: import('poker-engine').GameState | null }) {
+  if (!gameState || gameState.players.length === 0) return null
+  return (
+    <div style={{ width: '100%', maxWidth: 280 }}>
+      <p style={{ opacity: 0.5, fontSize: 13, marginBottom: 6 }}>
+        Players ({gameState.players.length}/8)
+      </p>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {gameState.players.map((p) => (
+          <li key={p.id} style={{ padding: '4px 0', fontSize: 15, opacity: p.status === 'connected' ? 1 : 0.4 }}>
+            {p.isHost ? '👑 ' : '• '}{p.name}
+            {p.status === 'disconnected' ? ' (disconnected)' : ''}
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 

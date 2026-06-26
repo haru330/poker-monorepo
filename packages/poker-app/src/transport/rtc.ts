@@ -34,6 +34,7 @@ export class RTCHostTransport implements Transport {
 
   private peers: RTCPeerConnection[] = []
   private channels: RTCDataChannel[] = []
+  private slotToPlayer = new Map<number, string>()  // slot → playerId
   private state: GameState = INITIAL_STATE
   private opts: RTCHostOptions
 
@@ -122,14 +123,25 @@ export class RTCHostTransport implements Transport {
   private handleGuestMessage(slot: number, msg: ClientMessage): void {
     switch (msg.type) {
       case 'JOIN': {
-        // Add guest to game state if not already present
-        const exists = this.state.players.find((p) => p.id === msg.sessionToken)
-        if (!exists && this.state.players.length < 8) {
+        this.slotToPlayer.set(slot, msg.sessionToken)
+        const existing = this.state.players.find((p) => p.id === msg.sessionToken)
+        if (existing) {
+          // Reconnect — mark them connected again
+          this.state = {
+            ...this.state,
+            players: this.state.players.map((p) =>
+              p.id === msg.sessionToken ? { ...p, status: 'connected' } : p,
+            ),
+          }
+        } else if (this.state.players.length < 8) {
+          // New player joining for the first time (lobby only)
           const player = createPlayer(msg.sessionToken, msg.name, this.state.startingChips, false)
           this.state = { ...this.state, players: [...this.state.players, player] }
+        } else {
+          this.sendToGuest(slot, { type: 'JOIN_REJECTED', reason: 'table is full' })
+          break
         }
-        const reply: ServerMessage = { type: 'JOIN_OK', sessionToken: msg.sessionToken }
-        this.sendToGuest(slot, reply)
+        this.sendToGuest(slot, { type: 'JOIN_OK', sessionToken: msg.sessionToken })
         this.broadcastState()
         break
       }
@@ -146,10 +158,17 @@ export class RTCHostTransport implements Transport {
   }
 
   private handleGuestDisconnect(slot: number): void {
-    const ch = this.channels[slot]
-    if (!ch) return
-    // Mark player disconnected — they can reconnect later by re-scanning
-    this.opts.onState(this.state)
+    // Find which player owned this slot by matching the last JOIN we received
+    const playerId = this.slotToPlayer.get(slot)
+    if (playerId) {
+      this.state = {
+        ...this.state,
+        players: this.state.players.map((p) =>
+          p.id === playerId ? { ...p, status: 'disconnected' } : p,
+        ),
+      }
+    }
+    this.broadcastState()
   }
 }
 
@@ -184,6 +203,7 @@ export class RTCGuestTransport implements Transport {
         this.ch!.send(JSON.stringify(msg))
       }
       this.ch.onmessage = (e) => this.handleHostMessage(JSON.parse(e.data) as ServerMessage)
+      this.ch.onclose = () => opts.onRejected('Host left the game')
     }
 
     this.setup()
