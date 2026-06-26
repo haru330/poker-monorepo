@@ -22,8 +22,8 @@ function Screen() {
   // ── Home ──────────────────────────────────────────────────────────────
   if (view === 'home') return (
     <Layout title="Poker">
-      <button onClick={() => { hostOnline(); setView('host') }}>Host — Online</button>
-      <button onClick={() => { hostOffline(); setView('host') }}>Host — Offline</button>
+      <button onClick={() => { hostOnline(); setView('host') }}>Host — Internet (P2P)</button>
+      <button onClick={() => { hostOffline(); setView('host') }}>Host — Hotspot / No internet</button>
       <button onClick={() => setView('join')}>Join (scan QR)</button>
     </Layout>
   )

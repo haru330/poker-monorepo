@@ -1,10 +1,8 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 import type { GameState } from 'poker-engine'
 import type { PairingPhase, QRPayload, Transport } from './types'
-import { WSHostTransport, WSGuestTransport } from './ws'
+import { PeerHostTransport, PeerGuestTransport } from './peer'
 import { RTCHostTransport, RTCGuestTransport } from './rtc'
-
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'ws://localhost:9000'
 
 interface TransportCtx {
   transport: Transport | null
@@ -40,8 +38,7 @@ export function TransportProvider({ children }: { children: ReactNode }) {
   const [rtcHost, setRtcHost] = useState<RTCHostTransport | null>(null)
 
   function hostOnline() {
-    const t = new WSHostTransport({
-      serverUrl: SERVER_URL,
+    const t = new PeerHostTransport({
       onState: setGameState,
       onQR: (payload: QRPayload) => setQrPayload(JSON.stringify(payload)),
       onError: setError,
@@ -72,8 +69,8 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     let payload: QRPayload
     try { payload = JSON.parse(raw) } catch { setError('Invalid QR code'); return }
 
-    if (payload.mode === 'ws') {
-      const t = new WSGuestTransport({
+    if (payload.mode === 'peer') {
+      const t = new PeerGuestTransport({
         payload,
         name,
         onState: setGameState,

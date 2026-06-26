@@ -5,8 +5,8 @@ import type { Action, GameState } from 'poker-engine'
 // know which transport path to take without any extra UI decision.
 
 export type QRPayload =
-  | { mode: 'ws';  url: string; roomCode: string }   // online: WS server join URL
-  | { mode: 'rtc'; offer: string; slot: number }     // offline: WebRTC SDP offer
+  | { mode: 'peer'; peerId: string }                 // online: PeerJS peer ID
+  | { mode: 'rtc';  offer: string; slot: number }    // offline: WebRTC SDP offer
 
 export type QRAnswer =
   | { mode: 'rtc'; answer: string; slot: number }    // offline: WebRTC SDP answer
