@@ -12,8 +12,8 @@ interface TransportCtx {
   error: string | null
 
   // Entry points — called from the lobby UI
-  hostOnline(): void
-  hostOffline(): void
+  hostOnline(name: string): void
+  hostOffline(name: string): void
   joinFromQR(raw: string, name: string): void
 
   // Offline-only pairing flow
@@ -37,8 +37,9 @@ export function TransportProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const [rtcHost, setRtcHost] = useState<RTCHostTransport | null>(null)
 
-  function hostOnline() {
+  function hostOnline(name: string) {
     const t = new PeerHostTransport({
+      hostName: name,
       onState: setGameState,
       onQR: (payload: QRPayload) => setQrPayload(JSON.stringify(payload)),
       onError: setError,
@@ -46,22 +47,20 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     setTransport(t)
   }
 
-  function hostOffline() {
+  function hostOffline(name: string) {
     const t = new RTCHostTransport({
+      hostName: name,
       onState: setGameState,
       onPairing: (phase) => {
         setPairing(phase)
-        // When the host has an offer ready, expose it as the QR payload
         if (phase.step === 'host-offering' && phase.offer) {
           setQrPayload(phase.offer)
         }
       },
       onError: setError,
     })
-    // Add the host as the first player
     setRtcHost(t)
     setTransport(t)
-    // Immediately generate the first guest offer
     t.offerNext()
   }
 

@@ -22,8 +22,9 @@ function waitForICE(pc: RTCPeerConnection): Promise<void> {
 // ── Host ──────────────────────────────────────────────────────────────────
 
 export interface RTCHostOptions {
+  hostName: string
   onState: (s: GameState) => void
-  onPairing: (phase: PairingPhase) => void  // drives the QR ceremony UI
+  onPairing: (phase: PairingPhase) => void
   onError: (reason: string) => void
 }
 
@@ -38,6 +39,12 @@ export class RTCHostTransport implements Transport {
 
   constructor(opts: RTCHostOptions) {
     this.opts = opts
+    // Add host as first player immediately
+    const token = localStorage.getItem('poker-session-token') ?? crypto.randomUUID()
+    localStorage.setItem('poker-session-token', token)
+    const player = createPlayer(token, opts.hostName, this.state.startingChips, true)
+    this.state = { ...this.state, players: [player] }
+    opts.onState(this.state)
   }
 
   /** Call once per guest. Shows offer QR, waits for answer to be fed in via completeHandshake(). */

@@ -16,15 +16,48 @@ function Screen() {
           hostOnline, hostOffline, joinFromQR,
           scanNextGuest, onAnswerScanned } = useTransport()
 
-  const [view, setView] = useState<'home' | 'host' | 'join' | 'scan-answer'>('home')
-  const [name, setName] = useState('')
+  const [view, setView] = useState<'home' | 'host-name' | 'host' | 'join' | 'scan-answer'>('home')
+  const [name, setName] = useState(() => localStorage.getItem('poker-username') ?? '')
 
   // ── Home ──────────────────────────────────────────────────────────────
   if (view === 'home') return (
     <Layout title="Poker">
-      <button onClick={() => { hostOnline(); setView('host') }}>Host — Internet (P2P)</button>
-      <button onClick={() => { hostOffline(); setView('host') }}>Host — Hotspot / No internet</button>
+      <button onClick={() => setView('host-name')}>Host — Internet (P2P)</button>
+      <button onClick={() => setView('host-name')}>Host — Hotspot / No internet</button>
       <button onClick={() => setView('join')}>Join (scan QR)</button>
+    </Layout>
+  )
+
+  // ── Host: enter name before hosting ───────────────────────────────────
+  if (view === 'host-name') return (
+    <Layout title="Your name">
+      <input
+        placeholder="Your name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        autoFocus
+      />
+      <Row>
+        <button
+          disabled={!name.trim()}
+          onClick={() => {
+            hostOnline(name.trim())
+            setView('host')
+          }}
+        >
+          Host Online
+        </button>
+        <button
+          disabled={!name.trim()}
+          onClick={() => {
+            hostOffline(name.trim())
+            setView('host')
+          }}
+        >
+          Host Offline
+        </button>
+      </Row>
+      <button onClick={() => setView('home')}>Back</button>
     </Layout>
   )
 

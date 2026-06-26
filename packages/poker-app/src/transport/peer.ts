@@ -43,6 +43,7 @@ const INITIAL_STATE: GameState = {
 // ── Host ──────────────────────────────────────────────────────────────────
 
 export interface PeerHostOptions {
+  hostName: string
   onState:  (s: GameState) => void
   onQR:     (payload: QRPayload) => void
   onError:  (reason: string) => void
@@ -62,7 +63,15 @@ export class PeerHostTransport implements Transport {
     this.state = { ...INITIAL_STATE, roomCode }
     this.peer  = new Peer(roomCode, STUN)
 
-    this.peer.on('open', (id) => opts.onQR({ mode: 'peer', peerId: id }))
+    this.peer.on('open', (id) => {
+      // Add host as first player
+      const token = sessionToken()
+      localStorage.setItem('poker-username', opts.hostName)
+      const player = createPlayer(token, opts.hostName, this.state.startingChips, true)
+      this.state = { ...this.state, players: [player] }
+      opts.onState(this.state)
+      opts.onQR({ mode: 'peer', peerId: id })
+    })
     this.peer.on('connection', (conn) => this.onConnection(conn))
     this.peer.on('error', (e) => opts.onError(String(e)))
   }
