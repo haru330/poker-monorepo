@@ -36,7 +36,14 @@ export function QRScanner({ onScan, onError }: Props) {
   return (
     <video
       ref={videoRef}
-      style={{ width: '100%', maxWidth: 320, borderRadius: 12, background: '#000' }}
+      style={{
+        width: '85vw',
+        maxWidth: 400,
+        aspectRatio: '1 / 1',
+        objectFit: 'cover',
+        borderRadius: 16,
+        background: '#000',
+      }}
     />
   )
 }
