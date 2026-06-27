@@ -137,7 +137,7 @@ function Screen() {
   )
 
   // ── Guest: show answer QR for host to scan (offline) ────────────────────
-  if (pairing.step === 'guest-answering' && qrPayload) return (
+  if (pairing.step === 'guest-answering' && qrPayload && !gameState) return (
     <Layout>
       <CommitBadge />
       <h2 style={{ margin: 0 }}>Show this to the host</h2>
