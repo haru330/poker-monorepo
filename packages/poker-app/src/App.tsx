@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { TransportProvider, useTransport } from './transport/TransportProvider'
 import { QRDisplay } from './qr/QRDisplay'
 import { QRScanner } from './qr/QRScanner'
+import { getDevLogs, clearDevLogs, subscribeDevLogs, type LogEntry } from './devLog'
 
 export default function App() {
   return (
@@ -12,32 +13,51 @@ export default function App() {
 }
 
 function Screen() {
-  const { transport, gameState, pairing, qrPayload, error,
-          hostOnline, hostOffline, hostSonic, joinFromQR, joinSonic,
-          scanNextGuest, onAnswerScanned, leave } = useTransport()
-
-  function handleLeave() { leave(); setView('home') }
+  const {
+    transport, gameState, pairing, qrPayload, error, lastPing,
+    hostOnline, hostOffline, joinFromQR,
+    scanNextGuest, onAnswerScanned, leave,
+  } = useTransport()
 
   const [view, setView] = useState<'home' | 'host-name' | 'host' | 'join' | 'scan-answer'>('home')
   const [name, setName] = useState(() => localStorage.getItem('poker-username') ?? '')
-  const [roomCodeInput, setRoomCodeInput] = useState('')
-  const [showQR, setShowQR] = useState(false)
+  const [manualInput, setManualInput] = useState('')
+  const [showManual, setShowManual] = useState(false)
 
-  const hasDisconnected = gameState?.players.some((p) => p.status === 'disconnected') ?? false
+  function handleLeave() { leave(); setView('home'); setManualInput(''); setShowManual(false) }
+
   const isOnlineHost = transport?.role === 'host' && qrPayload && pairing.step === 'idle'
   const isOfflineHost = transport?.role === 'host' && 'offerNext' in transport
 
-  // ── Home ──────────────────────────────────────────────────────────────
-  if (view === 'home') return (
-    <Layout title="Poker">
-      <button onClick={() => setView('host-name')}>Host</button>
-      <button onClick={() => setView('join')}>Join (scan QR)</button>
+  // ── Error ───────────────────────────────────────────────────────────────
+  if (error) return (
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ color: '#f87171', margin: 0 }}>{error === 'Host left the game' ? 'Game ended' : 'Error'}</h2>
+      <p style={{ opacity: 0.6, margin: 0 }}>{error}</p>
+      <button onClick={handleLeave}>Back to home</button>
+      <DevLogPanel />
     </Layout>
   )
 
-  // ── Host: enter name before hosting ───────────────────────────────────
+  // ── Home ─────────────────────────────────────────────────────────────────
+  if (view === 'home') return (
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ margin: 0 }}>Poker Dev</h2>
+      <Row>
+        <button onClick={() => setView('host-name')}>Host</button>
+        <button onClick={() => setView('join')}>Join (scan QR)</button>
+      </Row>
+      <DevLogPanel />
+    </Layout>
+  )
+
+  // ── Host: enter name ─────────────────────────────────────────────────────
   if (view === 'host-name') return (
-    <Layout title="Your name">
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ margin: 0 }}>Your name</h2>
       <input
         placeholder="Your name"
         value={name}
@@ -58,20 +78,16 @@ function Screen() {
           Offline (QR)
         </button>
       </Row>
-      <button
-        disabled={!name.trim()}
-        style={{ width: '100%', maxWidth: 280 }}
-        onClick={() => { hostSonic(name.trim()); setView('host') }}
-      >
-        Offline (Sonic) 🔊
-      </button>
       <button onClick={() => setView('home')}>Back</button>
+      <DevLogPanel />
     </Layout>
   )
 
-  // ── Join: enter name then scan QR or type room code ───────────────────
+  // ── Join: scan QR or paste manually ─────────────────────────────────────
   if (view === 'join' && !transport) return (
-    <Layout title="Join game">
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ margin: 0 }}>Join game</h2>
       <input
         placeholder="Your name"
         value={name}
@@ -80,113 +96,71 @@ function Screen() {
       {name.trim() && (
         <>
           <QRScanner onScan={(raw) => joinFromQR(raw, name.trim())} />
-          <p style={{ opacity: 0.4, fontSize: 13 }}>— or enter room code —</p>
+          <p style={{ opacity: 0.4, fontSize: 13, margin: 0 }}>— or enter room code (online) —</p>
           <Row>
             <input
               placeholder="ABCD"
-              value={roomCodeInput}
               maxLength={4}
-              style={{ width: 100, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 4 }}
-              onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
+              style={{ width: 80, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 4 }}
+              onChange={(e) => {
+                const v = e.target.value.toUpperCase()
+                if (v.length === 4) joinFromQR(JSON.stringify({ mode: 'peer', peerId: v }), name.trim())
+              }}
             />
-            <button
-              disabled={roomCodeInput.length !== 4}
-              onClick={() => joinFromQR(
-                JSON.stringify({ mode: 'peer', peerId: roomCodeInput }),
-                name.trim()
-              )}
-            >
-              Rejoin
-            </button>
           </Row>
+          <button style={{ opacity: 0.5, fontSize: 12 }} onClick={() => setShowManual((v) => !v)}>
+            {showManual ? 'Hide' : 'Can\'t scan? Paste QR text'}
+          </button>
+          {showManual && (
+            <div style={{ width: '100%', maxWidth: 320 }}>
+              <textarea
+                rows={4}
+                style={{ width: '100%', fontFamily: 'monospace', fontSize: 11, background: '#1e293b', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6, padding: 8, boxSizing: 'border-box' }}
+                placeholder='Paste QR JSON here e.g. {"mode":"rtc","offer":"...","slot":0}'
+                value={manualInput}
+                onChange={(e) => setManualInput(e.target.value)}
+              />
+              <button
+                disabled={!manualInput.trim()}
+                style={{ width: '100%', marginTop: 6 }}
+                onClick={() => joinFromQR(manualInput.trim(), name.trim())}
+              >
+                Connect with pasted text
+              </button>
+            </div>
+          )}
         </>
       )}
-      <button
-        style={{ width: '100%', maxWidth: 280 }}
-        onClick={() => { joinSonic(name.trim()); setView('join') }}
-        disabled={!name.trim()}
-      >
-        Listen for game (Sonic) 🎙️
-      </button>
       <button onClick={() => setView('home')}>Back</button>
+      <DevLogPanel />
     </Layout>
   )
 
-  // ── Sonic screens ─────────────────────────────────────────────────────
-  if (pairing.step === 'host-sonic-playing') return (
-    <Layout title="Playing offer…">
-      <p style={{ fontSize: 48 }}>🔊</p>
-      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
-        Hold your phone close to the guest's phone
-      </p>
-      <p style={{ opacity: 0.4, fontSize: 13 }}>Transmitting offer tone (ultrasonic)</p>
-      <button onClick={handleLeave}>Cancel</button>
-    </Layout>
-  )
-
-  if (pairing.step === 'host-sonic-listening') return (
-    <Layout title="Listening…">
-      <p style={{ fontSize: 48 }}>🎙️</p>
-      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
-        Guest: tap "Listen for game" then hold phones together
-      </p>
-      <p style={{ opacity: 0.4, fontSize: 13 }}>Waiting for answer tone</p>
-      <button onClick={handleLeave}>Cancel</button>
-    </Layout>
-  )
-
-  if (pairing.step === 'guest-sonic-listening') return (
-    <Layout title="Listening…">
-      <p style={{ fontSize: 48 }}>🎙️</p>
-      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
-        Hold your phone close to the host's phone
-      </p>
-      <p style={{ opacity: 0.4, fontSize: 13 }}>Waiting for offer tone</p>
-      <button onClick={handleLeave}>Cancel</button>
-    </Layout>
-  )
-
-  if (pairing.step === 'guest-sonic-playing') return (
-    <Layout title="Playing answer…">
-      <p style={{ fontSize: 48 }}>🔊</p>
-      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
-        Hold your phone close to the host's phone
-      </p>
-      <p style={{ opacity: 0.4, fontSize: 13 }}>Transmitting answer tone (ultrasonic)</p>
-      <button onClick={handleLeave}>Cancel</button>
-    </Layout>
-  )
-
-  // ── Error ─────────────────────────────────────────────────────────────
-  if (error) return (
-    <Layout title={error === 'Host left the game' ? 'Game ended' : 'Error'}>
-      <p style={{ opacity: 0.6 }}>{error}</p>
-      <button onClick={handleLeave}>Back to home</button>
-    </Layout>
-  )
-
-  // ── Host waiting for PeerJS broker ────────────────────────────────────
-  if (view === 'host' && pairing.step === 'idle' && !qrPayload && !gameState) return (
-    <Layout title="Connecting…">
-      <p style={{ opacity: 0.5 }}>Connecting to PeerJS broker…</p>
-      <button onClick={handleLeave}>Cancel</button>
-    </Layout>
-  )
-
-  // ── Guest: show answer QR for host to scan (offline) ──────────────────
+  // ── Guest: show answer QR for host to scan (offline) ────────────────────
   if (pairing.step === 'guest-answering' && qrPayload) return (
-    <Layout title="Show this to the host">
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ margin: 0 }}>Show this to the host</h2>
       <QRDisplay value={qrPayload} label="Host scans your screen" />
-      <p style={{ opacity: 0.6, fontSize: 13 }}>Hold still — host is scanning your answer</p>
+      <ManualFallback value={qrPayload} />
+      <p style={{ opacity: 0.6, fontSize: 13, margin: 0 }}>Hold still — host is scanning your answer</p>
       <button onClick={handleLeave}>Leave</button>
+      <DevLogPanel />
     </Layout>
   )
 
-  // ── Host offline: show offer QR ───────────────────────────────────────
+  // ── Host offline: show offer QR ──────────────────────────────────────────
   if (pairing.step === 'host-offering' && qrPayload) return (
-    <Layout title="Let players scan">
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ margin: 0 }}>Let players scan</h2>
       <QRDisplay value={qrPayload} label={`Guest ${(pairing as { slot: number }).slot + 1} — scan to join`} />
-      <PlayerList gameState={gameState} />
+      <ManualFallback value={qrPayload} />
+      {gameState && gameState.players.length > 0 && (
+        <p style={{ opacity: 0.5, fontSize: 13, margin: 0 }}>
+          Players: {gameState.players.map((p) => p.name).join(', ')}
+        </p>
+      )}
       <Row>
         {gameState && gameState.players.length >= 2 && (
           <button onClick={() => transport?.startGame()}>Start Game</button>
@@ -194,130 +168,213 @@ function Screen() {
         <button onClick={scanNextGuest}>Scan guest's answer →</button>
         <button onClick={handleLeave}>Cancel</button>
       </Row>
+      <DevLogPanel />
     </Layout>
   )
 
-  // ── Host: scanning guest's answer QR ──────────────────────────────────
+  // ── Host: scanning guest's answer QR ────────────────────────────────────
   if (pairing.step === 'host-scanning') return (
-    <Layout title="Scan guest's screen">
+    <Layout>
+      <CommitBadge />
+      <h2 style={{ margin: 0 }}>Scan guest's screen</h2>
       <QRScanner onScan={(raw) => { onAnswerScanned(raw); setView('host') }} />
-      <button onClick={handleLeave}>Leave</button>
-    </Layout>
-  )
-
-  // ── In game ───────────────────────────────────────────────────────────
-  if (gameState?.currentTurnPlayerId) return (
-    <Layout title={`${gameState.street.toUpperCase()}`}>
-      <p style={{ fontSize: 13, opacity: 0.4, letterSpacing: 3 }}>{gameState.roomCode}</p>
-      <p>Community: {gameState.communityCards.map((c) => `${c.rank}${suitSym(c.suit)}`).join(' ') || '—'}</p>
-      <p>Pot: {gameState.pots.reduce((s, p) => s + p.amount, 0)}</p>
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {gameState.players.map((p) => (
-          <li key={p.id} style={{ padding: '4px 0', fontWeight: p.id === gameState.currentTurnPlayerId ? 'bold' : 'normal', opacity: p.hasFolded ? 0.4 : p.status === 'disconnected' ? 0.3 : 1 }}>
-            {p.name} — {p.chips} chips
-            {p.id === gameState.currentTurnPlayerId ? ' ◀' : ''}
-            {p.status === 'disconnected' ? ' (disconnected)' : ''}
-          </li>
-        ))}
-      </ul>
-      {transport?.role === 'host' && (
-        <Row>
-          {isOnlineHost && (
-            <button onClick={() => setShowQR((v) => !v)}>
-              {showQR ? 'Hide QR' : 'Show QR'}
-            </button>
-          )}
-          {isOfflineHost && hasDisconnected && (
-            <button onClick={() => (transport as { offerNext(): void }).offerNext()}>
-              Reconnect player
-            </button>
-          )}
-        </Row>
-      )}
-      {showQR && qrPayload && (
-        <QRDisplay value={qrPayload} label={`Room ${gameState.roomCode}`} />
-      )}
-      <button onClick={handleLeave}>Leave game</button>
-    </Layout>
-  )
-
-  // ── Lobby ─────────────────────────────────────────────────────────────
-  if (gameState && gameState.players.length > 0 && !gameState.currentTurnPlayerId) return (
-    <Layout title={`Room ${gameState.roomCode}`}>
-      {/* Online host: always show QR + room code so guests can join */}
-      {isOnlineHost && qrPayload && (
-        <>
-          <p style={{ fontSize: 28, fontWeight: 'bold', letterSpacing: 6 }}>{gameState.roomCode}</p>
-          <QRDisplay value={qrPayload} label="Scan to join" />
-        </>
-      )}
-      <PlayerList gameState={gameState} />
-      {transport?.role === 'host' && (
-        <Row>
-          {gameState.players.length >= 2 && (
-            <button onClick={() => transport.startGame()}>Start Game</button>
-          )}
-          {isOfflineHost && (
-            <button onClick={() => (transport as { offerNext(): void }).offerNext()}>
-              {hasDisconnected ? 'Reconnect player' : 'Add player'}
-            </button>
-          )}
-        </Row>
+      <button style={{ opacity: 0.5, fontSize: 12 }} onClick={() => setShowManual((v) => !v)}>
+        {showManual ? 'Hide' : 'Can\'t scan? Paste guest\'s QR text'}
+      </button>
+      {showManual && (
+        <div style={{ width: '100%', maxWidth: 320 }}>
+          <textarea
+            rows={4}
+            style={{ width: '100%', fontFamily: 'monospace', fontSize: 11, background: '#1e293b', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6, padding: 8, boxSizing: 'border-box' }}
+            placeholder='Paste guest answer JSON here'
+            value={manualInput}
+            onChange={(e) => setManualInput(e.target.value)}
+          />
+          <button
+            disabled={!manualInput.trim()}
+            style={{ width: '100%', marginTop: 6 }}
+            onClick={() => { onAnswerScanned(manualInput.trim()); setView('host') }}
+          >
+            Connect with pasted text
+          </button>
+        </div>
       )}
       <button onClick={handleLeave}>Leave</button>
+      <DevLogPanel />
     </Layout>
   )
 
-  // ── Fallback ───────────────────────────────────────────────────────────
+  // ── Host waiting for PeerJS broker ───────────────────────────────────────
+  if (view === 'host' && pairing.step === 'idle' && !qrPayload && !gameState) return (
+    <Layout>
+      <CommitBadge />
+      <p style={{ opacity: 0.5 }}>Connecting to PeerJS broker…</p>
+      <button onClick={handleLeave}>Cancel</button>
+      <DevLogPanel />
+    </Layout>
+  )
+
+  // ── Dev lobby / in-game: ping button for all players ────────────────────
+  if (gameState) {
+    const myName = localStorage.getItem('poker-username') ?? name
+
+    return (
+      <Layout>
+        <CommitBadge />
+        <h2 style={{ margin: 0 }}>Dev Lobby</h2>
+        <p style={{ opacity: 0.5, fontSize: 13, margin: 0 }}>
+          Room: {gameState.roomCode} — {gameState.players.length} player(s)
+        </p>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, width: '100%', maxWidth: 280 }}>
+          {gameState.players.map((p) => (
+            <li key={p.id} style={{ padding: '3px 0', fontSize: 14, opacity: p.status === 'connected' ? 1 : 0.4 }}>
+              {p.isHost ? '👑 ' : '• '}{p.name}{p.status === 'disconnected' ? ' (off)' : ''}
+            </li>
+          ))}
+        </ul>
+
+        <button
+          style={{ padding: '14px 32px', fontSize: 18, background: '#6366f1', border: 'none', borderRadius: 10, color: '#fff', cursor: 'pointer' }}
+          onClick={() => transport?.devPing(myName)}
+        >
+          Ping!
+        </button>
+
+        {lastPing && (
+          <p style={{ fontSize: 14, color: '#86efac', margin: 0 }}>
+            Last ping: <strong>{lastPing}</strong>
+          </p>
+        )}
+
+        {/* Online host: show QR + room code */}
+        {isOnlineHost && qrPayload && (
+          <>
+            <p style={{ fontSize: 24, fontWeight: 'bold', letterSpacing: 6, margin: 0 }}>{gameState.roomCode}</p>
+            <QRDisplay value={qrPayload} label="Scan to join" />
+          </>
+        )}
+
+        {/* Offline host controls */}
+        {isOfflineHost && (
+          <button onClick={() => (transport as { offerNext(): void }).offerNext()}>
+            Add player (QR)
+          </button>
+        )}
+
+        {transport?.role === 'host' && gameState.players.length >= 2 && (
+          <button onClick={() => transport.startGame()}>Start Game</button>
+        )}
+
+        <button onClick={handleLeave}>Leave</button>
+        <DevLogPanel />
+      </Layout>
+    )
+  }
+
+  // ── Fallback ─────────────────────────────────────────────────────────────
   return (
-    <Layout title="Connecting…">
-      <p style={{ opacity: 0.5 }}>Please wait</p>
+    <Layout>
+      <CommitBadge />
+      <p style={{ opacity: 0.5 }}>Please wait…</p>
       <button onClick={handleLeave}>Leave</button>
+      <DevLogPanel />
     </Layout>
   )
 }
 
-// ── Shared player list ─────────────────────────────────────────────────────
+// ── Commit badge ────────────────────────────────────────────────────────────
 
-function PlayerList({ gameState }: { gameState: import('poker-engine').GameState | null }) {
-  if (!gameState || gameState.players.length === 0) return null
+function CommitBadge() {
   return (
-    <div style={{ width: '100%', maxWidth: 280 }}>
-      <p style={{ opacity: 0.5, fontSize: 13, marginBottom: 6 }}>
-        Players ({gameState.players.length}/8)
-      </p>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {gameState.players.map((p) => (
-          <li key={p.id} style={{ padding: '4px 0', fontSize: 15, opacity: p.status === 'connected' ? 1 : 0.4 }}>
-            {p.isHost ? '👑 ' : '• '}{p.name}
-            {p.status === 'disconnected' ? ' (disconnected)' : ''}
-          </li>
-        ))}
-      </ul>
+    <div style={{ position: 'fixed', top: 8, right: 8, background: '#1e293b', border: '1px solid #334155', borderRadius: 6, padding: '2px 8px', fontSize: 11, color: '#64748b', fontFamily: 'monospace', zIndex: 100 }}>
+      {__GIT_COMMIT__}
     </div>
   )
 }
 
-// ── Tiny layout helpers ────────────────────────────────────────────────────
+// ── Manual QR fallback ──────────────────────────────────────────────────────
 
-function Layout({ title, children }: { title: string; children: React.ReactNode }) {
+function ManualFallback({ value }: { value: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div style={{ width: '100%', maxWidth: 320, textAlign: 'center' }}>
+      <button style={{ opacity: 0.45, fontSize: 12 }} onClick={() => setOpen((v) => !v)}>
+        {open ? 'Hide text' : 'Can\'t scan? Show QR text'}
+      </button>
+      {open && (
+        <textarea
+          readOnly
+          rows={5}
+          style={{ width: '100%', fontFamily: 'monospace', fontSize: 10, background: '#1e293b', color: '#94a3b8', border: '1px solid #334155', borderRadius: 6, padding: 8, boxSizing: 'border-box', marginTop: 6 }}
+          value={value}
+          onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Dev log panel ────────────────────────────────────────────────────────────
+
+function DevLogPanel() {
+  const logs = useSyncExternalStore(subscribeDevLogs, getDevLogs)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (open) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [open, logs])
+
+  const levelColor: Record<string, string> = {
+    info: '#94a3b8', warn: '#fbbf24', error: '#f87171', debug: '#64748b',
+  }
+
+  return (
+    <div style={{ width: '100%', maxWidth: 500, marginTop: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <button style={{ fontSize: 12, opacity: 0.6, padding: '2px 8px' }} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide' : 'Show'} dev log ({logs.length})
+        </button>
+        {open && (
+          <button style={{ fontSize: 11, opacity: 0.4, padding: '2px 8px' }} onClick={clearDevLogs}>
+            Clear
+          </button>
+        )}
+      </div>
+      {open && (
+        <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, maxHeight: 280, overflowY: 'auto', padding: 8 }}>
+          {logs.length === 0 && <p style={{ opacity: 0.3, fontSize: 12, margin: 0, textAlign: 'center' }}>No logs yet</p>}
+          {(logs as readonly LogEntry[]).map((entry) => (
+            <div key={entry.id} style={{ fontFamily: 'monospace', fontSize: 11, lineHeight: 1.5, borderBottom: '1px solid #1e293b', paddingBottom: 2, marginBottom: 2 }}>
+              <span style={{ color: '#475569' }}>{new Date(entry.ts).toISOString().slice(11, 23)}</span>
+              {' '}
+              <span style={{ color: levelColor[entry.level] ?? '#94a3b8', fontWeight: 'bold', textTransform: 'uppercase', fontSize: 10 }}>{entry.level}</span>
+              {' '}
+              <span style={{ color: '#cbd5e1' }}>{entry.msg}</span>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Layout helpers ─────────────────────────────────────────────────────────
+
+function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div style={{
       minHeight: '100dvh', display: 'flex', flexDirection: 'column',
-      alignItems: 'center', justifyContent: 'center',
-      gap: 16, padding: 24, background: '#0f172a', color: '#f1f5f9',
-      fontFamily: 'system-ui, sans-serif',
+      alignItems: 'center', justifyContent: 'flex-start',
+      gap: 14, padding: '56px 24px 24px', background: '#0f172a', color: '#f1f5f9',
+      fontFamily: 'system-ui, sans-serif', boxSizing: 'border-box',
     }}>
-      <h1 style={{ margin: 0, fontSize: 22 }}>{title}</h1>
       {children}
     </div>
   )
 }
 
 function Row({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: 'flex', gap: 12 }}>{children}</div>
-}
-
-function suitSym(suit: string): string {
-  return { spades: '♠', hearts: '♥', diamonds: '♦', clubs: '♣' }[suit] ?? suit
+  return <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>{children}</div>
 }

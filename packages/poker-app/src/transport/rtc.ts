@@ -2,16 +2,12 @@ import type { GameState } from 'poker-engine'
 import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, PairingPhase, QRAnswer, QRPayload, ServerMessage, Transport } from './types'
 import { compressSdp, decompressSdp, compressSdpToBytes, decompressSdpFromBytes } from './sdp'
+import { devLog } from '../devLog'
 
-// STUN helps discover reflexive candidates on home WiFi networks.
-// On a personal hotspot (no internet) it times out gracefully and
-// host-only candidates (LAN IPs) are still used.
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 }
 
-// Wait for ICE gathering to finish so the SDP contains all candidates.
-// On LAN this is fast (<200ms) since only host-reflexive candidates are needed.
 function waitForICE(pc: RTCPeerConnection): Promise<void> {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === 'complete') { resolve(); return }
@@ -31,21 +27,22 @@ export interface RTCHostOptions {
   onState: (s: GameState) => void
   onPairing: (phase: PairingPhase) => void
   onError: (reason: string) => void
+  onDevPing: (playerName: string) => void
 }
 
 export class RTCHostTransport implements Transport {
   readonly role = 'host' as const
-  connected = true  // host is always "connected" to itself
+  connected = true
 
   private peers: RTCPeerConnection[] = []
   private channels: RTCDataChannel[] = []
-  private slotToPlayer = new Map<number, string>()  // slot → playerId
+  private slotToPlayer = new Map<number, string>()
   private state: GameState = INITIAL_STATE
   private opts: RTCHostOptions
 
   constructor(opts: RTCHostOptions) {
     this.opts = opts
-    // Add host as first player immediately
+    devLog('info', `[RTCHost] created, hostName=${opts.hostName}`)
     const token = localStorage.getItem('poker-session-token') ?? crypto.randomUUID()
     localStorage.setItem('poker-session-token', token)
     const player = createPlayer(token, opts.hostName, this.state.startingChips, true)
@@ -53,21 +50,26 @@ export class RTCHostTransport implements Transport {
     opts.onState(this.state)
   }
 
-  /** Call once per guest. Shows offer QR, waits for answer to be fed in via completeHandshake(). */
   async offerNext(): Promise<void> {
     const slot = this.peers.length
+    devLog('info', `[RTCHost] offerNext slot=${slot}`)
     const pc = new RTCPeerConnection(RTC_CONFIG)
     const ch = pc.createDataChannel('poker', { ordered: true })
 
     ch.onmessage = (ev) => this.handleGuestMessage(slot, JSON.parse(ev.data) as ClientMessage)
-    ch.onopen  = () => this.sendToGuest(slot, { type: 'STATE', state: this.state })
-    ch.onclose = () => this.handleGuestDisconnect(slot)
+    ch.onopen    = () => {
+      devLog('info', `[RTCHost] channel open slot=${slot}, sending STATE`)
+      this.sendToGuest(slot, { type: 'STATE', state: this.state })
+    }
+    ch.onclose   = () => {
+      devLog('warn', `[RTCHost] channel closed slot=${slot}`)
+      this.handleGuestDisconnect(slot)
+    }
 
     pc.oniceconnectionstatechange = () => {
+      devLog('debug', `[RTCHost] ICE state slot=${slot}: ${pc.iceConnectionState}`)
       if (pc.iceConnectionState === 'failed') {
-        this.opts.onError(
-          'Could not reach guest — make sure both devices are on the same hotspot or Wi-Fi network.'
-        )
+        this.opts.onError('Could not reach guest — make sure both devices are on the same hotspot or Wi-Fi network.')
       }
     }
 
@@ -76,87 +78,54 @@ export class RTCHostTransport implements Transport {
 
     const offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
+    devLog('info', `[RTCHost] waiting for ICE gathering slot=${slot}`)
     await waitForICE(pc)
+    devLog('info', `[RTCHost] ICE gathered slot=${slot}, showing QR`)
 
     const payload: QRPayload = { mode: 'rtc', offer: compressSdp(pc.localDescription!.sdp), slot }
     this.opts.onPairing({ step: 'host-offering', offer: JSON.stringify(payload), slot })
   }
 
-  /** Called when host scans the guest's answer QR. */
   async completeHandshake(raw: string): Promise<void> {
     try {
+      devLog('info', `[RTCHost] completeHandshake raw.length=${raw.length}`)
       const qrAnswer = JSON.parse(raw) as QRAnswer
       const pc = this.peers[qrAnswer.slot]
       if (!pc) { this.opts.onError(`no peer for slot ${qrAnswer.slot}`); return }
       await pc.setRemoteDescription({ type: 'answer', sdp: decompressSdp(qrAnswer.answer) })
+      devLog('info', `[RTCHost] remote description set slot=${qrAnswer.slot}, awaiting ICE`)
       this.opts.onPairing({ step: 'done' })
     } catch (e) {
+      devLog('error', `[RTCHost] completeHandshake error: ${e}`)
       this.opts.onError(`Handshake failed: ${e}`)
     }
   }
 
-  // ── Sonic pairing (replaces QR for offline mode) ──────────────────────
-
-  /** Like offerNext() but returns compressed SDP bytes instead of emitting a QR payload. */
-  async offerNextSonic(): Promise<{ slot: number; bytes: Uint8Array }> {
-    const slot = this.peers.length
-    const pc   = new RTCPeerConnection(RTC_CONFIG)
-    const ch   = pc.createDataChannel('poker', { ordered: true })
-
-    ch.onmessage = (ev) => this.handleGuestMessage(slot, JSON.parse(ev.data) as ClientMessage)
-    ch.onopen    = () => this.sendToGuest(slot, { type: 'STATE', state: this.state })
-    ch.onclose   = () => this.handleGuestDisconnect(slot)
-
-    pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'failed') {
-        this.opts.onError('Could not reach guest — make sure both devices are on the same hotspot.')
-      }
-    }
-
-    this.peers.push(pc)
-    this.channels.push(ch)
-
-    const offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    await waitForICE(pc)
-
-    return { slot, bytes: compressSdpToBytes(pc.localDescription!.sdp) }
-  }
-
-  /** Complete handshake from raw compressed SDP bytes received via sonic. */
-  async completeHandshakeSonic(slot: number, answerBytes: Uint8Array): Promise<void> {
-    try {
-      const sdp = decompressSdpFromBytes(answerBytes)
-      const pc  = this.peers[slot]
-      if (!pc) { this.opts.onError(`no peer for slot ${slot}`); return }
-      await pc.setRemoteDescription({ type: 'answer', sdp })
-      this.opts.onPairing({ step: 'done' })
-    } catch (e) {
-      this.opts.onError(`Sonic handshake failed: ${e}`)
-    }
-  }
-
-  /** Host triggers next guest pairing after current one completes. */
-  pairNextGuest(): void {
-    const slot = this.peers.length
-    this.opts.onPairing({ step: 'host-offering', offer: '', slot }) // reset UI
-    this.offerNext()
-  }
-
   sendAction(action: Parameters<Transport['sendAction']>[0]): void {
+    devLog('info', `[RTCHost] sendAction ${action.type}`)
     this.state = applyAction(this.state, action)
     this.broadcastState()
   }
 
   startGame(): void {
+    devLog('info', `[RTCHost] startGame, players=${this.state.players.length}`)
     const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
     this.state = dealNewHand({ ...this.state, players })
+    devLog('info', `[RTCHost] game started, turn=${this.state.currentTurnPlayerId}`)
     this.broadcastState()
   }
 
   nextHand(): void {
+    devLog('info', `[RTCHost] nextHand`)
     this.state = dealNewHand(this.state)
     this.broadcastState()
+  }
+
+  devPing(playerName: string): void {
+    devLog('info', `[RTCHost] host devPing: ${playerName}`)
+    this.opts.onDevPing(playerName)
+    const broadcast: ServerMessage = { type: 'DEV_PING_BROADCAST', playerName }
+    this.channels.forEach((ch) => { if (ch.readyState === 'open') ch.send(JSON.stringify(broadcast)) })
   }
 
   leave(): void {
@@ -166,9 +135,11 @@ export class RTCHostTransport implements Transport {
 
   private broadcastState(): void {
     const msg: ServerMessage = { type: 'STATE', state: this.state }
+    devLog('debug', `[RTCHost] broadcasting STATE, channels=${this.channels.length}, turn=${this.state.currentTurnPlayerId}`)
     this.opts.onState(this.state)
     this.channels.forEach((ch) => {
       if (ch.readyState === 'open') ch.send(JSON.stringify(msg))
+      else devLog('warn', `[RTCHost] channel not open (${ch.readyState}), STATE not sent`)
     })
   }
 
@@ -178,12 +149,13 @@ export class RTCHostTransport implements Transport {
   }
 
   private handleGuestMessage(slot: number, msg: ClientMessage): void {
+    devLog('debug', `[RTCHost] rx from slot=${slot}: ${msg.type}`)
     switch (msg.type) {
       case 'JOIN': {
         this.slotToPlayer.set(slot, msg.sessionToken)
         const existing = this.state.players.find((p) => p.id === msg.sessionToken)
         if (existing) {
-          // Reconnect — mark them connected again
+          devLog('info', `[RTCHost] reconnect slot=${slot}: ${existing.name}`)
           this.state = {
             ...this.state,
             players: this.state.players.map((p) =>
@@ -191,10 +163,11 @@ export class RTCHostTransport implements Transport {
             ),
           }
         } else if (this.state.players.length < 8) {
-          // New player joining for the first time (lobby only)
           const player = createPlayer(msg.sessionToken, msg.name, this.state.startingChips, false)
           this.state = { ...this.state, players: [...this.state.players, player] }
+          devLog('info', `[RTCHost] player joined slot=${slot}: ${msg.name} (${this.state.players.length} total)`)
         } else {
+          devLog('warn', `[RTCHost] JOIN rejected: table full`)
           this.sendToGuest(slot, { type: 'JOIN_REJECTED', reason: 'table is full' })
           break
         }
@@ -204,10 +177,18 @@ export class RTCHostTransport implements Transport {
       }
       case 'ACTION':
         if (msg.action.playerId === this.state.currentTurnPlayerId) {
+          devLog('info', `[RTCHost] action ${msg.action.type} slot=${slot}`)
           this.state = applyAction(this.state, msg.action)
           this.broadcastState()
         }
         break
+      case 'DEV_PING': {
+        devLog('info', `[RTCHost] DEV_PING from slot=${slot}: ${msg.playerName}`)
+        this.opts.onDevPing(msg.playerName)
+        const broadcast: ServerMessage = { type: 'DEV_PING_BROADCAST', playerName: msg.playerName }
+        this.channels.forEach((ch) => { if (ch.readyState === 'open') ch.send(JSON.stringify(broadcast)) })
+        break
+      }
       case 'PING':
         this.sendToGuest(slot, { type: 'PONG' })
         break
@@ -215,8 +196,8 @@ export class RTCHostTransport implements Transport {
   }
 
   private handleGuestDisconnect(slot: number): void {
-    // Find which player owned this slot by matching the last JOIN we received
     const playerId = this.slotToPlayer.get(slot)
+    devLog('warn', `[RTCHost] guest disconnected slot=${slot}, playerId=${playerId ?? 'unknown'}`)
     if (playerId) {
       this.state = {
         ...this.state,
@@ -232,17 +213,14 @@ export class RTCHostTransport implements Transport {
 // ── Guest ─────────────────────────────────────────────────────────────────
 
 export interface RTCGuestOptions {
-  // QR path: payload from scanned QR code
   payload?: QRPayload & { mode: 'rtc' }
-  // Sonic path: raw SDP + slot received via audio
   offerSdpRaw?: { sdp: string; slot: number }
   name: string
   onState: (s: GameState) => void
-  // QR path: show answer QR
   onAnswer?: (phase: PairingPhase) => void
-  // Sonic path: receive answer as raw bytes to play back
   onAnswerBytes?: (bytes: Uint8Array, slot: number) => void
   onRejected: (reason: string) => void
+  onDevPing: (playerName: string) => void
 }
 
 export class RTCGuestTransport implements Transport {
@@ -254,34 +232,38 @@ export class RTCGuestTransport implements Transport {
 
   constructor(opts: RTCGuestOptions) {
     this.opts = opts
+    devLog('info', `[RTCGuest] created, name=${opts.name}`)
     this.pc = new RTCPeerConnection(RTC_CONFIG)
 
     this.pc.oniceconnectionstatechange = () => {
+      devLog('debug', `[RTCGuest] ICE state: ${this.pc.iceConnectionState}`)
       if (this.pc.iceConnectionState === 'failed') {
-        opts.onRejected(
-          'Could not reach host — make sure both devices are on the same hotspot or Wi-Fi network.'
-        )
+        opts.onRejected('Could not reach host — make sure both devices are on the same hotspot or Wi-Fi network.')
       }
     }
 
     this.pc.ondatachannel = (ev) => {
+      devLog('info', `[RTCGuest] data channel received`)
       this.ch = ev.channel
       this.ch.onopen = () => {
         this.connected = true
+        devLog('info', `[RTCGuest] channel open, sending JOIN`)
         const token = localStorage.getItem('poker-session-token') ?? crypto.randomUUID()
         localStorage.setItem('poker-session-token', token)
         const msg: ClientMessage = { type: 'JOIN', name: opts.name, sessionToken: token }
         this.ch!.send(JSON.stringify(msg))
       }
       this.ch.onmessage = (e) => this.handleHostMessage(JSON.parse(e.data) as ServerMessage)
-      this.ch.onclose = () => opts.onRejected('Host left the game')
+      this.ch.onclose = () => {
+        devLog('warn', `[RTCGuest] channel closed (host left)`)
+        opts.onRejected('Host left the game')
+      }
     }
 
     this.setup()
   }
 
   private async setup(): Promise<void> {
-    // Resolve offer SDP from whichever source was provided
     let sdp: string
     let slot: number
 
@@ -289,43 +271,57 @@ export class RTCGuestTransport implements Transport {
       sdp  = this.opts.offerSdpRaw.sdp
       slot = this.opts.offerSdpRaw.slot
     } else if (this.opts.payload) {
+      devLog('info', `[RTCGuest] decompressing offer SDP`)
       sdp  = decompressSdp(this.opts.payload.offer)
       slot = this.opts.payload.slot
     } else {
       this.opts.onRejected('No offer provided'); return
     }
 
+    devLog('info', `[RTCGuest] setRemoteDescription (offer) slot=${slot}`)
     await this.pc.setRemoteDescription({ type: 'offer', sdp })
     const answer = await this.pc.createAnswer()
     await this.pc.setLocalDescription(answer)
+    devLog('info', `[RTCGuest] waiting for ICE gathering`)
     await waitForICE(this.pc)
+    devLog('info', `[RTCGuest] ICE gathered, emitting answer`)
 
     const localSdp = this.pc.localDescription!.sdp
 
     if (this.opts.onAnswerBytes) {
-      // Sonic path: return raw compressed bytes for audio playback
       this.opts.onAnswerBytes(compressSdpToBytes(localSdp), slot)
     } else if (this.opts.onAnswer) {
-      // QR path: encode as JSON for QR display
       const qrAnswer: QRAnswer = { mode: 'rtc', answer: compressSdp(localSdp), slot }
       this.opts.onAnswer({ step: 'guest-answering', answer: JSON.stringify(qrAnswer), slot })
     }
   }
 
   private handleHostMessage(msg: ServerMessage): void {
+    devLog('debug', `[RTCGuest] rx: ${msg.type}`)
     switch (msg.type) {
-      case 'STATE':        this.opts.onState(msg.state); break
-      case 'JOIN_REJECTED': this.opts.onRejected(msg.reason); break
+      case 'STATE':
+        devLog('debug', `[RTCGuest] STATE received, turn=${msg.state.currentTurnPlayerId}, players=${msg.state.players.length}`)
+        this.opts.onState(msg.state); break
+      case 'JOIN_REJECTED':
+        devLog('warn', `[RTCGuest] JOIN_REJECTED: ${msg.reason}`)
+        this.opts.onRejected(msg.reason); break
+      case 'JOIN_OK':
+        devLog('info', `[RTCGuest] JOIN_OK`); break
+      case 'DEV_PING_BROADCAST':
+        devLog('info', `[RTCGuest] DEV_PING_BROADCAST: ${msg.playerName}`)
+        this.opts.onDevPing(msg.playerName); break
     }
   }
 
   sendAction(action: Parameters<Transport['sendAction']>[0]): void {
     this.send({ type: 'ACTION', action })
   }
-
   startGame(): void { this.send({ type: 'START_GAME' }) }
   nextHand(): void  { this.send({ type: 'NEXT_HAND' }) }
-
+  devPing(playerName: string): void {
+    devLog('info', `[RTCGuest] sending DEV_PING: ${playerName}`)
+    this.send({ type: 'DEV_PING', playerName })
+  }
   leave(): void {
     this.connected = false
     this.ch?.close()
@@ -334,6 +330,7 @@ export class RTCGuestTransport implements Transport {
 
   private send(msg: ClientMessage): void {
     if (this.ch?.readyState === 'open') this.ch.send(JSON.stringify(msg))
+    else devLog('warn', `[RTCGuest] tried to send ${msg.type} but channel not open`)
   }
 }
 
@@ -364,3 +361,6 @@ const INITIAL_STATE = {
   actionLog: [] as never[],
   results: null,
 }
+
+// Keep these exported for potential future sonic use — not wired to UI
+export { compressSdpToBytes, decompressSdpFromBytes }

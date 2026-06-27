@@ -3,28 +3,24 @@ import type { GameState } from 'poker-engine'
 import type { PairingPhase, QRPayload, Transport } from './types'
 import { PeerHostTransport, PeerGuestTransport } from './peer'
 import { RTCHostTransport, RTCGuestTransport } from './rtc'
-import { decompressSdpFromBytes, } from './sdp'
-import { playSonicData, startSonicListener } from './sonic'
+import { devLog } from '../devLog'
 
 interface TransportCtx {
   transport: Transport | null
   gameState: GameState | null
   pairing: PairingPhase
-  qrPayload: string | null        // JSON string to render as QR on host screen
+  qrPayload: string | null
   error: string | null
+  lastPing: string | null
 
-  // Entry points — called from the lobby UI
   hostOnline(name: string): void
   hostOffline(name: string): void
-  hostSonic(name: string): void
   joinFromQR(raw: string, name: string): void
-  joinSonic(name: string): void
 
-  // QR offline-only pairing flow
   scanNextGuest(): void
   onAnswerScanned(raw: string): void
 
-  leave(): void  // tear down transport + reset all state
+  leave(): void
 }
 
 const Ctx = createContext<TransportCtx | null>(null)
@@ -41,21 +37,28 @@ export function TransportProvider({ children }: { children: ReactNode }) {
   const [pairing, setPairing] = useState<PairingPhase>({ step: 'idle' })
   const [qrPayload, setQrPayload] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [rtcHost, setRtcHost] = useState<RTCHostTransport | null>(null)
-  // AbortController for sonic mic sessions
-  const sonicAbort = useRef<AbortController | null>(null)
+  const [lastPing, setLastPing] = useState<string | null>(null)
+  const rtcHostRef = useRef<RTCHostTransport | null>(null)
+
+  function onDevPing(playerName: string) {
+    devLog('info', `[Ping] ${playerName} pressed the button`)
+    setLastPing(playerName)
+  }
 
   function hostOnline(name: string) {
+    devLog('info', `[TransportProvider] hostOnline: ${name}`)
     const t = new PeerHostTransport({
       hostName: name,
       onState: setGameState,
       onQR: (payload: QRPayload) => setQrPayload(JSON.stringify(payload)),
       onError: setError,
+      onDevPing,
     })
     setTransport(t)
   }
 
   function hostOffline(name: string) {
+    devLog('info', `[TransportProvider] hostOffline: ${name}`)
     const t = new RTCHostTransport({
       hostName: name,
       onState: setGameState,
@@ -66,129 +69,75 @@ export function TransportProvider({ children }: { children: ReactNode }) {
         }
       },
       onError: setError,
+      onDevPing,
     })
-    setRtcHost(t)
+    rtcHostRef.current = t
     setTransport(t)
     t.offerNext()
   }
 
   function joinFromQR(raw: string, name: string) {
+    devLog('info', `[TransportProvider] joinFromQR, name=${name}`)
     let payload: QRPayload
-    try { payload = JSON.parse(raw) } catch { setError('Invalid QR code'); return }
+    try { payload = JSON.parse(raw) } catch {
+      devLog('error', '[TransportProvider] joinFromQR: invalid JSON')
+      setError('Invalid QR code')
+      return
+    }
 
     if (payload.mode === 'peer') {
-      const t = new PeerGuestTransport({
-        payload,
-        name,
-        onState: setGameState,
-        onRejected: setError,
-      })
+      devLog('info', `[TransportProvider] joining peer peerId=${payload.peerId}`)
+      const t = new PeerGuestTransport({ payload, name, onState: setGameState, onRejected: setError, onDevPing })
       setTransport(t)
       return
     }
 
     if (payload.mode === 'rtc') {
+      devLog('info', `[TransportProvider] joining RTC slot=${payload.slot}`)
       const t = new RTCGuestTransport({
         payload,
         name,
         onState: setGameState,
         onAnswer: (phase) => {
           setPairing(phase)
-          // Expose the answer SDP as a QR for the guest to show the host
           if (phase.step === 'guest-answering') setQrPayload(phase.answer)
         },
         onRejected: setError,
+        onDevPing,
       })
       setTransport(t)
     }
   }
 
-  // ── Sonic offline host ──────────────────────────────────────────────────
-
-  function hostSonic(name: string) {
-    const t = new RTCHostTransport({
-      hostName: name,
-      onState:   setGameState,
-      onPairing: setPairing,
-      onError:   setError,
-    })
-    setRtcHost(t)
-    setTransport(t)
-    runSonicOffer(t)
+  function scanNextGuest() {
+    if (!rtcHostRef.current) return
+    const slot = pairing.step === 'host-offering' ? (pairing as { slot: number }).slot : 0
+    devLog('info', `[TransportProvider] scanNextGuest slot=${slot}`)
+    setPairing({ step: 'host-scanning', slot })
+    setQrPayload(null)
   }
 
-  async function runSonicOffer(t: RTCHostTransport) {
-    try {
-      const { slot, bytes } = await t.offerNextSonic()
-      setPairing({ step: 'host-sonic-playing', slot })
-      await playSonicData(bytes)
-
-      const ac = new AbortController()
-      sonicAbort.current = ac
-      setPairing({ step: 'host-sonic-listening', slot })
-
-      await startSonicListener((answerBytes) => {
-        ac.abort()
-        t.completeHandshakeSonic(slot, answerBytes)
-      }, ac.signal)
-    } catch (e) {
-      setError(String(e))
-    }
-  }
-
-  // ── Sonic offline guest ─────────────────────────────────────────────────
-
-  function joinSonic(name: string) {
-    setPairing({ step: 'guest-sonic-listening' })
-    const ac = new AbortController()
-    sonicAbort.current = ac
-
-    startSonicListener(async (offerBytes) => {
-      ac.abort()
-      const sdp  = decompressSdpFromBytes(offerBytes)
-      const t    = new RTCGuestTransport({
-        offerSdpRaw: { sdp, slot: 0 },
-        name,
-        onState: setGameState,
-        onAnswerBytes: async (answerBytes, slot) => {
-          setPairing({ step: 'guest-sonic-playing', slot })
-          await playSonicData(answerBytes)
-          setPairing({ step: 'done' })
-        },
-        onRejected: setError,
-      })
-      setTransport(t)
-    }, ac.signal).catch(setError)
+  function onAnswerScanned(raw: string) {
+    devLog('info', `[TransportProvider] onAnswerScanned len=${raw.length}`)
+    rtcHostRef.current?.completeHandshake(raw)
   }
 
   function leave() {
-    sonicAbort.current?.abort()
-    sonicAbort.current = null
+    devLog('info', '[TransportProvider] leave')
     transport?.leave()
     setTransport(null)
     setGameState(null)
     setQrPayload(null)
     setPairing({ step: 'idle' })
     setError(null)
-    setRtcHost(null)
-  }
-
-  function scanNextGuest() {
-    if (!rtcHost) return
-    const slot = pairing.step === 'host-offering' ? (pairing as { slot: number }).slot : 0
-    setPairing({ step: 'host-scanning', slot })
-    setQrPayload(null)
-  }
-
-  // Host feeds in the raw string from the scanned answer QR
-  function onAnswerScanned(raw: string) {
-    rtcHost?.completeHandshake(raw)
+    setLastPing(null)
+    rtcHostRef.current = null
   }
 
   return (
     <Ctx.Provider value={{
-      transport, gameState, pairing, qrPayload, error,
-      hostOnline, hostOffline, hostSonic, joinFromQR, joinSonic,
+      transport, gameState, pairing, qrPayload, error, lastPing,
+      hostOnline, hostOffline, joinFromQR,
       scanNextGuest, onAnswerScanned, leave,
     }}>
       {children}

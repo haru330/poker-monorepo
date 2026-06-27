@@ -2,6 +2,7 @@ import Peer, { type DataConnection } from 'peerjs'
 import type { GameState } from 'poker-engine'
 import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, QRPayload, ServerMessage, Transport } from './types'
+import { devLog } from '../devLog'
 
 const STUN = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } }
 
@@ -47,6 +48,7 @@ export interface PeerHostOptions {
   onState:  (s: GameState) => void
   onQR:     (payload: QRPayload) => void
   onError:  (reason: string) => void
+  onDevPing: (playerName: string) => void
 }
 
 export class PeerHostTransport implements Transport {
@@ -54,17 +56,18 @@ export class PeerHostTransport implements Transport {
   connected = true
 
   private peer: Peer
-  private conns   = new Map<string, DataConnection>() // connId → conn
-  private connPid = new Map<string, string>()         // connId → playerId
+  private conns   = new Map<string, DataConnection>()
+  private connPid = new Map<string, string>()
   private state: GameState
 
   constructor(private opts: PeerHostOptions) {
     const roomCode = generateRoomCode()
     this.state = { ...INITIAL_STATE, roomCode }
+    devLog('info', `[PeerHost] creating peer with roomCode=${roomCode}`)
     this.peer  = new Peer(roomCode, STUN)
 
     this.peer.on('open', (id) => {
-      // Add host as first player
+      devLog('info', `[PeerHost] peer open, id=${id}`)
       const token = sessionToken()
       localStorage.setItem('poker-username', opts.hostName)
       const player = createPlayer(token, opts.hostName, this.state.startingChips, true)
@@ -72,22 +75,30 @@ export class PeerHostTransport implements Transport {
       opts.onState(this.state)
       opts.onQR({ mode: 'peer', peerId: id })
     })
-    this.peer.on('connection', (conn) => this.onConnection(conn))
-    this.peer.on('error', (e) => opts.onError(String(e)))
+    this.peer.on('connection', (conn) => {
+      devLog('info', `[PeerHost] incoming connection connId=${conn.connectionId}`)
+      this.onConnection(conn)
+    })
+    this.peer.on('error', (e) => {
+      devLog('error', `[PeerHost] peer error: ${e}`)
+      opts.onError(String(e))
+    })
   }
 
   private onConnection(conn: DataConnection) {
     this.conns.set(conn.connectionId, conn)
     conn.on('data',  (d) => this.handleMessage(conn, d as ClientMessage))
     conn.on('close', ()  => this.handleDisconnect(conn))
+    conn.on('error', (e) => devLog('error', `[PeerHost] conn error connId=${conn.connectionId}: ${e}`))
   }
 
   private handleMessage(conn: DataConnection, msg: ClientMessage) {
+    devLog('debug', `[PeerHost] rx from connId=${conn.connectionId}: ${msg.type}`)
     switch (msg.type) {
       case 'JOIN': {
         const existing = this.state.players.find((p) => p.id === msg.sessionToken)
         if (existing) {
-          // Reconnect — re-associate connection and mark connected
+          devLog('info', `[PeerHost] reconnect: ${existing.name}`)
           this.connPid.set(conn.connectionId, msg.sessionToken)
           this.state = {
             ...this.state,
@@ -99,6 +110,7 @@ export class PeerHostTransport implements Transport {
           this.broadcastState(); return
         }
         if (this.state.players.length >= 8) {
+          devLog('warn', `[PeerHost] JOIN rejected: table full`)
           this.send(conn, { type: 'JOIN_REJECTED', reason: 'table is full' }); return
         }
         const base = msg.name.trim()
@@ -115,30 +127,43 @@ export class PeerHostTransport implements Transport {
         const player = createPlayer(msg.sessionToken, finalName, this.state.startingChips, false)
         this.connPid.set(conn.connectionId, msg.sessionToken)
         this.state = { ...this.state, players: [...players, player] }
+        devLog('info', `[PeerHost] player joined: ${finalName} (${this.state.players.length} total)`)
         this.send(conn, { type: 'JOIN_OK', sessionToken: msg.sessionToken })
         this.broadcastState(); break
       }
       case 'ACTION':
         if (msg.action.playerId === this.state.currentTurnPlayerId) {
+          devLog('info', `[PeerHost] action ${msg.action.type} from ${msg.action.playerId}`)
           this.state = applyAction(this.state, msg.action)
           this.broadcastState()
         }
         break
       case 'START_GAME': {
+        devLog('info', `[PeerHost] START_GAME from guest`)
         const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
         this.state = dealNewHand({ ...this.state, players })
+        devLog('info', `[PeerHost] game started, currentTurn=${this.state.currentTurnPlayerId}`)
         this.broadcastState(); break
       }
       case 'NEXT_HAND':
         this.state = dealNewHand(this.state)
+        devLog('info', `[PeerHost] next hand dealt`)
         this.broadcastState(); break
       case 'PING':
         this.send(conn, { type: 'PONG' }); break
+      case 'DEV_PING': {
+        devLog('info', `[PeerHost] DEV_PING from ${msg.playerName}`)
+        this.opts.onDevPing(msg.playerName)
+        const broadcast: ServerMessage = { type: 'DEV_PING_BROADCAST', playerName: msg.playerName }
+        this.conns.forEach((c) => { if (c.open) c.send(broadcast) })
+        break
+      }
     }
   }
 
   private handleDisconnect(conn: DataConnection) {
     const playerId = this.connPid.get(conn.connectionId)
+    devLog('info', `[PeerHost] conn closed connId=${conn.connectionId} playerId=${playerId ?? 'unknown'}`)
     this.conns.delete(conn.connectionId)
     this.connPid.delete(conn.connectionId)
     if (!playerId) return
@@ -162,21 +187,34 @@ export class PeerHostTransport implements Transport {
 
   private broadcastState() {
     const msg: ServerMessage = { type: 'STATE', state: this.state }
+    devLog('debug', `[PeerHost] broadcasting STATE to ${this.conns.size} connections, players=${this.state.players.length}, turn=${this.state.currentTurnPlayerId}`)
     this.opts.onState(this.state)
     this.conns.forEach((c) => { if (c.open) c.send(msg) })
   }
 
   sendAction(action: Parameters<Transport['sendAction']>[0]) {
+    devLog('info', `[PeerHost] host sendAction ${action.type}`)
     this.state = applyAction(this.state, action)
     this.broadcastState()
   }
   startGame() {
+    devLog('info', `[PeerHost] host startGame, players=${this.state.players.length}`)
     const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
     this.state = dealNewHand({ ...this.state, players })
+    devLog('info', `[PeerHost] game started, currentTurn=${this.state.currentTurnPlayerId}`)
     this.broadcastState()
   }
-  nextHand() { this.state = dealNewHand(this.state); this.broadcastState() }
-  leave()    { this.conns.forEach((c) => c.close()); this.peer.destroy() }
+  nextHand() {
+    devLog('info', `[PeerHost] nextHand`)
+    this.state = dealNewHand(this.state); this.broadcastState()
+  }
+  devPing(playerName: string) {
+    devLog('info', `[PeerHost] host devPing: ${playerName}`)
+    this.opts.onDevPing(playerName)
+    const broadcast: ServerMessage = { type: 'DEV_PING_BROADCAST', playerName }
+    this.conns.forEach((c) => { if (c.open) c.send(broadcast) })
+  }
+  leave() { this.conns.forEach((c) => c.close()); this.peer.destroy() }
 }
 
 // ── Guest ─────────────────────────────────────────────────────────────────
@@ -186,6 +224,7 @@ export interface PeerGuestOptions {
   name:       string
   onState:    (s: GameState) => void
   onRejected: (reason: string) => void
+  onDevPing:  (playerName: string) => void
 }
 
 export class PeerGuestTransport implements Transport {
@@ -195,14 +234,17 @@ export class PeerGuestTransport implements Transport {
   private conn: DataConnection | null = null
 
   constructor(private opts: PeerGuestOptions) {
+    devLog('info', `[PeerGuest] connecting to peerId=${opts.payload.peerId}`)
     this.peer = new Peer(STUN)
 
     this.peer.on('open', () => {
+      devLog('info', `[PeerGuest] local peer open, connecting to host`)
       const conn = this.peer.connect(opts.payload.peerId, { reliable: true })
       this.conn = conn
 
       conn.on('open', () => {
         this.connected = true
+        devLog('info', `[PeerGuest] connection open, sending JOIN`)
         const name = localStorage.getItem(NAME_KEY) ?? opts.name
         localStorage.setItem(NAME_KEY, name)
         const msg: ClientMessage = { type: 'JOIN', name, sessionToken: sessionToken() }
@@ -211,23 +253,43 @@ export class PeerGuestTransport implements Transport {
 
       conn.on('data', (d) => {
         const msg = d as ServerMessage
+        devLog('debug', `[PeerGuest] rx: ${msg.type}`)
         switch (msg.type) {
-          case 'STATE':        opts.onState(msg.state); break
-          case 'JOIN_REJECTED': opts.onRejected(msg.reason); break
+          case 'STATE':
+            devLog('debug', `[PeerGuest] STATE received, turn=${msg.state.currentTurnPlayerId}, players=${msg.state.players.length}`)
+            opts.onState(msg.state); break
+          case 'JOIN_REJECTED':
+            devLog('warn', `[PeerGuest] JOIN_REJECTED: ${msg.reason}`)
+            opts.onRejected(msg.reason); break
+          case 'JOIN_OK':
+            devLog('info', `[PeerGuest] JOIN_OK`); break
+          case 'DEV_PING_BROADCAST':
+            devLog('info', `[PeerGuest] DEV_PING_BROADCAST from ${msg.playerName}`)
+            opts.onDevPing(msg.playerName); break
         }
       })
 
-      conn.on('close', () => opts.onRejected('Host left the game'))
-      conn.on('error', () => opts.onRejected('Host left the game'))
+      conn.on('close', () => { devLog('warn', `[PeerGuest] connection closed (host left)`); opts.onRejected('Host left the game') })
+      conn.on('error', (e) => { devLog('error', `[PeerGuest] conn error: ${e}`); opts.onRejected('Host left the game') })
     })
 
-    this.peer.on('error', (e) => opts.onRejected(String(e)))
+    this.peer.on('error', (e) => {
+      devLog('error', `[PeerGuest] peer error: ${e}`)
+      opts.onRejected(String(e))
+    })
   }
 
   sendAction(action: Parameters<Transport['sendAction']>[0]) { this.send({ type: 'ACTION', action }) }
   startGame() { this.send({ type: 'START_GAME' }) }
   nextHand()  { this.send({ type: 'NEXT_HAND' }) }
-  leave()     { this.conn?.close(); this.peer.destroy(); this.connected = false }
+  devPing(playerName: string) {
+    devLog('info', `[PeerGuest] sending DEV_PING: ${playerName}`)
+    this.send({ type: 'DEV_PING', playerName })
+  }
+  leave() { this.conn?.close(); this.peer.destroy(); this.connected = false }
 
-  private send(msg: ClientMessage) { if (this.conn?.open) this.conn.send(msg) }
+  private send(msg: ClientMessage) {
+    if (this.conn?.open) this.conn.send(msg)
+    else devLog('warn', `[PeerGuest] tried to send ${msg.type} but conn not open`)
+  }
 }

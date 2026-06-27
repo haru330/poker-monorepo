@@ -1,56 +1,45 @@
 import type { Action, GameState } from 'poker-engine'
 
 // ── QR payloads ────────────────────────────────────────────────────────────
-// Both modes encode JSON into the QR. The `mode` field lets the scanner
-// know which transport path to take without any extra UI decision.
-
 export type QRPayload =
-  | { mode: 'peer'; peerId: string }                 // online: PeerJS peer ID
-  | { mode: 'rtc';  offer: string; slot: number }    // offline: WebRTC SDP offer
+  | { mode: 'peer'; peerId: string }
+  | { mode: 'rtc';  offer: string; slot: number }
 
 export type QRAnswer =
-  | { mode: 'rtc'; answer: string; slot: number }    // offline: WebRTC SDP answer
+  | { mode: 'rtc'; answer: string; slot: number }
 
 // ── Transport interface ────────────────────────────────────────────────────
-// The UI only ever talks to this interface — never to WS or RTC directly.
-
 export interface Transport {
   role: 'host' | 'guest'
   connected: boolean
   sendAction(action: Action): void
   startGame(): void
   nextHand(): void
+  devPing(playerName: string): void
   leave(): void
 }
 
 // ── Pairing state (offline only) ──────────────────────────────────────────
-// Drives the sequential QR ceremony on both host and guest screens.
-
 export type PairingPhase =
   | { step: 'idle' }
-  // QR offline pairing
-  | { step: 'host-offering';  offer: string; slot: number }  // host shows offer QR
-  | { step: 'host-scanning';  slot: number }                 // host scans guest answer
-  | { step: 'guest-answering'; answer: string; slot: number } // guest shows answer QR
-  // Sonic offline pairing
-  | { step: 'host-sonic-playing';   slot: number }  // host playing offer tones
-  | { step: 'host-sonic-listening'; slot: number }  // host mic open, waiting for answer
-  | { step: 'guest-sonic-listening' }               // guest mic open, waiting for offer
-  | { step: 'guest-sonic-playing';  slot: number }  // guest playing answer tones
+  | { step: 'host-offering';   offer: string; slot: number }
+  | { step: 'host-scanning';   slot: number }
+  | { step: 'guest-answering'; answer: string; slot: number }
   | { step: 'done' }
 
-// ── Wire messages (shared by WS + RTC data channel) ───────────────────────
-
+// ── Wire messages ──────────────────────────────────────────────────────────
 export type ClientMessage =
   | { type: 'JOIN';       name: string; sessionToken: string }
   | { type: 'ACTION';     action: Action }
   | { type: 'START_GAME' }
   | { type: 'NEXT_HAND' }
   | { type: 'PING' }
+  | { type: 'DEV_PING';  playerName: string }
 
 export type ServerMessage =
-  | { type: 'ROOM_CREATED'; roomCode: string }
-  | { type: 'JOIN_OK';      sessionToken: string }
-  | { type: 'JOIN_REJECTED'; reason: string }
-  | { type: 'STATE';        state: GameState }
+  | { type: 'ROOM_CREATED';        roomCode: string }
+  | { type: 'JOIN_OK';             sessionToken: string }
+  | { type: 'JOIN_REJECTED';       reason: string }
+  | { type: 'STATE';               state: GameState }
   | { type: 'PONG' }
+  | { type: 'DEV_PING_BROADCAST';  playerName: string }
