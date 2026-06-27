@@ -3,8 +3,12 @@ import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, PairingPhase, QRAnswer, QRPayload, ServerMessage, Transport } from './types'
 import { compressSdp, decompressSdp } from './sdp'
 
-// No STUN needed — peers are on the same LAN hotspot subnet.
-const RTC_CONFIG: RTCConfiguration = { iceServers: [] }
+// STUN helps discover reflexive candidates on home WiFi networks.
+// On a personal hotspot (no internet) it times out gracefully and
+// host-only candidates (LAN IPs) are still used.
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+}
 
 // Wait for ICE gathering to finish so the SDP contains all candidates.
 // On LAN this is fast (<200ms) since only host-reflexive candidates are needed.
@@ -58,6 +62,14 @@ export class RTCHostTransport implements Transport {
     ch.onmessage = (ev) => this.handleGuestMessage(slot, JSON.parse(ev.data) as ClientMessage)
     ch.onopen  = () => this.sendToGuest(slot, { type: 'STATE', state: this.state })
     ch.onclose = () => this.handleGuestDisconnect(slot)
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'failed') {
+        this.opts.onError(
+          'Could not reach guest — make sure both devices are on the same hotspot or Wi-Fi network.'
+        )
+      }
+    }
 
     this.peers.push(pc)
     this.channels.push(ch)
@@ -196,6 +208,14 @@ export class RTCGuestTransport implements Transport {
   constructor(opts: RTCGuestOptions) {
     this.opts = opts
     this.pc = new RTCPeerConnection(RTC_CONFIG)
+
+    this.pc.oniceconnectionstatechange = () => {
+      if (this.pc.iceConnectionState === 'failed') {
+        opts.onRejected(
+          'Could not reach host — make sure both devices are on the same hotspot or Wi-Fi network.'
+        )
+      }
+    }
 
     this.pc.ondatachannel = (ev) => {
       this.ch = ev.channel
