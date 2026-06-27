@@ -13,7 +13,7 @@ export default function App() {
 
 function Screen() {
   const { transport, gameState, pairing, qrPayload, error,
-          hostOnline, hostOffline, joinFromQR,
+          hostOnline, hostOffline, hostSonic, joinFromQR, joinSonic,
           scanNextGuest, onAnswerScanned, leave } = useTransport()
 
   function handleLeave() { leave(); setView('home') }
@@ -49,15 +49,22 @@ function Screen() {
           disabled={!name.trim()}
           onClick={() => { hostOnline(name.trim()); setView('host') }}
         >
-          Host Online
+          Online (QR)
         </button>
         <button
           disabled={!name.trim()}
           onClick={() => { hostOffline(name.trim()); setView('host') }}
         >
-          Host Offline
+          Offline (QR)
         </button>
       </Row>
+      <button
+        disabled={!name.trim()}
+        style={{ width: '100%', maxWidth: 280 }}
+        onClick={() => { hostSonic(name.trim()); setView('host') }}
+      >
+        Offline (Sonic) 🔊
+      </button>
       <button onClick={() => setView('home')}>Back</button>
     </Layout>
   )
@@ -94,7 +101,59 @@ function Screen() {
           </Row>
         </>
       )}
+      <button
+        style={{ width: '100%', maxWidth: 280 }}
+        onClick={() => { joinSonic(name.trim()); setView('join') }}
+        disabled={!name.trim()}
+      >
+        Listen for game (Sonic) 🎙️
+      </button>
       <button onClick={() => setView('home')}>Back</button>
+    </Layout>
+  )
+
+  // ── Sonic screens ─────────────────────────────────────────────────────
+  if (pairing.step === 'host-sonic-playing') return (
+    <Layout title="Playing offer…">
+      <p style={{ fontSize: 48 }}>🔊</p>
+      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
+        Hold your phone close to the guest's phone
+      </p>
+      <p style={{ opacity: 0.4, fontSize: 13 }}>Transmitting offer tone (ultrasonic)</p>
+      <button onClick={handleLeave}>Cancel</button>
+    </Layout>
+  )
+
+  if (pairing.step === 'host-sonic-listening') return (
+    <Layout title="Listening…">
+      <p style={{ fontSize: 48 }}>🎙️</p>
+      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
+        Guest: tap "Listen for game" then hold phones together
+      </p>
+      <p style={{ opacity: 0.4, fontSize: 13 }}>Waiting for answer tone</p>
+      <button onClick={handleLeave}>Cancel</button>
+    </Layout>
+  )
+
+  if (pairing.step === 'guest-sonic-listening') return (
+    <Layout title="Listening…">
+      <p style={{ fontSize: 48 }}>🎙️</p>
+      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
+        Hold your phone close to the host's phone
+      </p>
+      <p style={{ opacity: 0.4, fontSize: 13 }}>Waiting for offer tone</p>
+      <button onClick={handleLeave}>Cancel</button>
+    </Layout>
+  )
+
+  if (pairing.step === 'guest-sonic-playing') return (
+    <Layout title="Playing answer…">
+      <p style={{ fontSize: 48 }}>🔊</p>
+      <p style={{ opacity: 0.7, textAlign: 'center', maxWidth: 260 }}>
+        Hold your phone close to the host's phone
+      </p>
+      <p style={{ opacity: 0.4, fontSize: 13 }}>Transmitting answer tone (ultrasonic)</p>
+      <button onClick={handleLeave}>Cancel</button>
     </Layout>
   )
 

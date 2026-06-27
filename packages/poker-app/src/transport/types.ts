@@ -28,9 +28,15 @@ export interface Transport {
 
 export type PairingPhase =
   | { step: 'idle' }
+  // QR offline pairing
   | { step: 'host-offering';  offer: string; slot: number }  // host shows offer QR
   | { step: 'host-scanning';  slot: number }                 // host scans guest answer
   | { step: 'guest-answering'; answer: string; slot: number } // guest shows answer QR
+  // Sonic offline pairing
+  | { step: 'host-sonic-playing';   slot: number }  // host playing offer tones
+  | { step: 'host-sonic-listening'; slot: number }  // host mic open, waiting for answer
+  | { step: 'guest-sonic-listening' }               // guest mic open, waiting for offer
+  | { step: 'guest-sonic-playing';  slot: number }  // guest playing answer tones
   | { step: 'done' }
 
 // ── Wire messages (shared by WS + RTC data channel) ───────────────────────

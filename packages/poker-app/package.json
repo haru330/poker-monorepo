@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "ggwave": "^0.4.0",
     "pako": "^3.0.0",
     "peerjs": "^1.5.5",
     "poker-betting": "workspace:*",

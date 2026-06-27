@@ -1,7 +1,7 @@
 import type { GameState } from 'poker-engine'
 import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, PairingPhase, QRAnswer, QRPayload, ServerMessage, Transport } from './types'
-import { compressSdp, decompressSdp } from './sdp'
+import { compressSdp, decompressSdp, compressSdpToBytes, decompressSdpFromBytes } from './sdp'
 
 // STUN helps discover reflexive candidates on home WiFi networks.
 // On a personal hotspot (no internet) it times out gracefully and
@@ -92,6 +92,47 @@ export class RTCHostTransport implements Transport {
       this.opts.onPairing({ step: 'done' })
     } catch (e) {
       this.opts.onError(`Handshake failed: ${e}`)
+    }
+  }
+
+  // ── Sonic pairing (replaces QR for offline mode) ──────────────────────
+
+  /** Like offerNext() but returns compressed SDP bytes instead of emitting a QR payload. */
+  async offerNextSonic(): Promise<{ slot: number; bytes: Uint8Array }> {
+    const slot = this.peers.length
+    const pc   = new RTCPeerConnection(RTC_CONFIG)
+    const ch   = pc.createDataChannel('poker', { ordered: true })
+
+    ch.onmessage = (ev) => this.handleGuestMessage(slot, JSON.parse(ev.data) as ClientMessage)
+    ch.onopen    = () => this.sendToGuest(slot, { type: 'STATE', state: this.state })
+    ch.onclose   = () => this.handleGuestDisconnect(slot)
+
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'failed') {
+        this.opts.onError('Could not reach guest — make sure both devices are on the same hotspot.')
+      }
+    }
+
+    this.peers.push(pc)
+    this.channels.push(ch)
+
+    const offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    await waitForICE(pc)
+
+    return { slot, bytes: compressSdpToBytes(pc.localDescription!.sdp) }
+  }
+
+  /** Complete handshake from raw compressed SDP bytes received via sonic. */
+  async completeHandshakeSonic(slot: number, answerBytes: Uint8Array): Promise<void> {
+    try {
+      const sdp = decompressSdpFromBytes(answerBytes)
+      const pc  = this.peers[slot]
+      if (!pc) { this.opts.onError(`no peer for slot ${slot}`); return }
+      await pc.setRemoteDescription({ type: 'answer', sdp })
+      this.opts.onPairing({ step: 'done' })
+    } catch (e) {
+      this.opts.onError(`Sonic handshake failed: ${e}`)
     }
   }
 
@@ -191,10 +232,16 @@ export class RTCHostTransport implements Transport {
 // ── Guest ─────────────────────────────────────────────────────────────────
 
 export interface RTCGuestOptions {
-  payload: QRPayload & { mode: 'rtc' }   // decoded from scanned QR
+  // QR path: payload from scanned QR code
+  payload?: QRPayload & { mode: 'rtc' }
+  // Sonic path: raw SDP + slot received via audio
+  offerSdpRaw?: { sdp: string; slot: number }
   name: string
   onState: (s: GameState) => void
-  onAnswer: (phase: PairingPhase) => void // guest shows answer QR
+  // QR path: show answer QR
+  onAnswer?: (phase: PairingPhase) => void
+  // Sonic path: receive answer as raw bytes to play back
+  onAnswerBytes?: (bytes: Uint8Array, slot: number) => void
   onRejected: (reason: string) => void
 }
 
@@ -234,15 +281,35 @@ export class RTCGuestTransport implements Transport {
   }
 
   private async setup(): Promise<void> {
-    const { payload } = this.opts
-    await this.pc.setRemoteDescription({ type: 'offer', sdp: decompressSdp(payload.offer) })
+    // Resolve offer SDP from whichever source was provided
+    let sdp: string
+    let slot: number
+
+    if (this.opts.offerSdpRaw) {
+      sdp  = this.opts.offerSdpRaw.sdp
+      slot = this.opts.offerSdpRaw.slot
+    } else if (this.opts.payload) {
+      sdp  = decompressSdp(this.opts.payload.offer)
+      slot = this.opts.payload.slot
+    } else {
+      this.opts.onRejected('No offer provided'); return
+    }
+
+    await this.pc.setRemoteDescription({ type: 'offer', sdp })
     const answer = await this.pc.createAnswer()
     await this.pc.setLocalDescription(answer)
     await waitForICE(this.pc)
 
-    const qrAnswer: QRAnswer = { mode: 'rtc', answer: compressSdp(this.pc.localDescription!.sdp), slot: payload.slot }
-    // Tell the UI to show the answer QR so the host can scan it
-    this.opts.onAnswer({ step: 'guest-answering', answer: JSON.stringify(qrAnswer), slot: payload.slot })
+    const localSdp = this.pc.localDescription!.sdp
+
+    if (this.opts.onAnswerBytes) {
+      // Sonic path: return raw compressed bytes for audio playback
+      this.opts.onAnswerBytes(compressSdpToBytes(localSdp), slot)
+    } else if (this.opts.onAnswer) {
+      // QR path: encode as JSON for QR display
+      const qrAnswer: QRAnswer = { mode: 'rtc', answer: compressSdp(localSdp), slot }
+      this.opts.onAnswer({ step: 'guest-answering', answer: JSON.stringify(qrAnswer), slot })
+    }
   }
 
   private handleHostMessage(msg: ServerMessage): void {

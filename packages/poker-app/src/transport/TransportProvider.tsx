@@ -1,8 +1,10 @@
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
 import type { GameState } from 'poker-engine'
 import type { PairingPhase, QRPayload, Transport } from './types'
 import { PeerHostTransport, PeerGuestTransport } from './peer'
 import { RTCHostTransport, RTCGuestTransport } from './rtc'
+import { decompressSdpFromBytes, } from './sdp'
+import { playSonicData, startSonicListener } from './sonic'
 
 interface TransportCtx {
   transport: Transport | null
@@ -14,9 +16,11 @@ interface TransportCtx {
   // Entry points — called from the lobby UI
   hostOnline(name: string): void
   hostOffline(name: string): void
+  hostSonic(name: string): void
   joinFromQR(raw: string, name: string): void
+  joinSonic(name: string): void
 
-  // Offline-only pairing flow
+  // QR offline-only pairing flow
   scanNextGuest(): void
   onAnswerScanned(raw: string): void
 
@@ -38,6 +42,8 @@ export function TransportProvider({ children }: { children: ReactNode }) {
   const [qrPayload, setQrPayload] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rtcHost, setRtcHost] = useState<RTCHostTransport | null>(null)
+  // AbortController for sonic mic sessions
+  const sonicAbort = useRef<AbortController | null>(null)
 
   function hostOnline(name: string) {
     const t = new PeerHostTransport({
@@ -97,7 +103,67 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // ── Sonic offline host ──────────────────────────────────────────────────
+
+  function hostSonic(name: string) {
+    const t = new RTCHostTransport({
+      hostName: name,
+      onState:   setGameState,
+      onPairing: setPairing,
+      onError:   setError,
+    })
+    setRtcHost(t)
+    setTransport(t)
+    runSonicOffer(t)
+  }
+
+  async function runSonicOffer(t: RTCHostTransport) {
+    try {
+      const { slot, bytes } = await t.offerNextSonic()
+      setPairing({ step: 'host-sonic-playing', slot })
+      await playSonicData(bytes)
+
+      const ac = new AbortController()
+      sonicAbort.current = ac
+      setPairing({ step: 'host-sonic-listening', slot })
+
+      await startSonicListener((answerBytes) => {
+        ac.abort()
+        t.completeHandshakeSonic(slot, answerBytes)
+      }, ac.signal)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  // ── Sonic offline guest ─────────────────────────────────────────────────
+
+  function joinSonic(name: string) {
+    setPairing({ step: 'guest-sonic-listening' })
+    const ac = new AbortController()
+    sonicAbort.current = ac
+
+    startSonicListener(async (offerBytes) => {
+      ac.abort()
+      const sdp  = decompressSdpFromBytes(offerBytes)
+      const t    = new RTCGuestTransport({
+        offerSdpRaw: { sdp, slot: 0 },
+        name,
+        onState: setGameState,
+        onAnswerBytes: async (answerBytes, slot) => {
+          setPairing({ step: 'guest-sonic-playing', slot })
+          await playSonicData(answerBytes)
+          setPairing({ step: 'done' })
+        },
+        onRejected: setError,
+      })
+      setTransport(t)
+    }, ac.signal).catch(setError)
+  }
+
   function leave() {
+    sonicAbort.current?.abort()
+    sonicAbort.current = null
     transport?.leave()
     setTransport(null)
     setGameState(null)
@@ -122,7 +188,7 @@ export function TransportProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{
       transport, gameState, pairing, qrPayload, error,
-      hostOnline, hostOffline, joinFromQR,
+      hostOnline, hostOffline, hostSonic, joinFromQR, joinSonic,
       scanNextGuest, onAnswerScanned, leave,
     }}>
       {children}
