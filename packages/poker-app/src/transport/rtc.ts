@@ -1,6 +1,7 @@
 import type { GameState } from 'poker-engine'
 import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, PairingPhase, QRAnswer, QRPayload, ServerMessage, Transport } from './types'
+import { compressSdp, decompressSdp } from './sdp'
 
 // No STUN needed — peers are on the same LAN hotspot subnet.
 const RTC_CONFIG: RTCConfiguration = { iceServers: [] }
@@ -65,18 +66,21 @@ export class RTCHostTransport implements Transport {
     await pc.setLocalDescription(offer)
     await waitForICE(pc)
 
-    const payload: QRPayload = { mode: 'rtc', offer: pc.localDescription!.sdp, slot }
+    const payload: QRPayload = { mode: 'rtc', offer: compressSdp(pc.localDescription!.sdp), slot }
     this.opts.onPairing({ step: 'host-offering', offer: JSON.stringify(payload), slot })
   }
 
   /** Called when host scans the guest's answer QR. */
   async completeHandshake(raw: string): Promise<void> {
-    const qrAnswer = JSON.parse(raw) as QRAnswer
-    const pc = this.peers[qrAnswer.slot]
-    if (!pc) { this.opts.onError(`no peer for slot ${qrAnswer.slot}`); return }
-
-    await pc.setRemoteDescription({ type: 'answer', sdp: qrAnswer.answer })
-    this.opts.onPairing({ step: 'done' })
+    try {
+      const qrAnswer = JSON.parse(raw) as QRAnswer
+      const pc = this.peers[qrAnswer.slot]
+      if (!pc) { this.opts.onError(`no peer for slot ${qrAnswer.slot}`); return }
+      await pc.setRemoteDescription({ type: 'answer', sdp: decompressSdp(qrAnswer.answer) })
+      this.opts.onPairing({ step: 'done' })
+    } catch (e) {
+      this.opts.onError(`Handshake failed: ${e}`)
+    }
   }
 
   /** Host triggers next guest pairing after current one completes. */
@@ -211,12 +215,12 @@ export class RTCGuestTransport implements Transport {
 
   private async setup(): Promise<void> {
     const { payload } = this.opts
-    await this.pc.setRemoteDescription({ type: 'offer', sdp: payload.offer })
+    await this.pc.setRemoteDescription({ type: 'offer', sdp: decompressSdp(payload.offer) })
     const answer = await this.pc.createAnswer()
     await this.pc.setLocalDescription(answer)
     await waitForICE(this.pc)
 
-    const qrAnswer: QRAnswer = { mode: 'rtc', answer: this.pc.localDescription!.sdp, slot: payload.slot }
+    const qrAnswer: QRAnswer = { mode: 'rtc', answer: compressSdp(this.pc.localDescription!.sdp), slot: payload.slot }
     // Tell the UI to show the answer QR so the host can scan it
     this.opts.onAnswer({ step: 'guest-answering', answer: JSON.stringify(qrAnswer), slot: payload.slot })
   }
