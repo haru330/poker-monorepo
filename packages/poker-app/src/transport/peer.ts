@@ -37,7 +37,8 @@ const INITIAL_STATE: GameState = {
   street: 'preflop', pots: [],
   dealerButtonIndex: -1, currentTurnPlayerId: null,
   currentBet: 0, minRaise: 0,
-  startingChips: 100, bigBlind: 2,
+  startingChips: 100,
+  currentAnte: 2, startingAnte: 2, handsPerLevel: 5, handNumber: 0,
   actionLog: [], results: null,
 }
 

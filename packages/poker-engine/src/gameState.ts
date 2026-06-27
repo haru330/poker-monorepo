@@ -18,12 +18,15 @@ function nextActiveIndex(players: Player[], fromIndex: number, predicate: (p: Pl
 const isInHand = (p: Player) => !p.hasFolded && p.status === 'connected'
 const canAct   = (p: Player) => isInHand(p) && !p.isAllIn
 
-/**
- * Deals a fresh hand: shuffles the deck, deals hole cards, rotates the dealer
- * button, and posts blinds.
- */
+export function computeAnte(state: GameState): number {
+  const level = Math.floor(state.handNumber / state.handsPerLevel)
+  return state.startingAnte * Math.pow(2, level)
+}
+
 export function dealNewHand(state: GameState): GameState {
   const deck = shuffle(freshDeck())
+  const handNumber = state.handNumber + 1
+  const ante = computeAnte({ ...state, handNumber })
 
   let players = state.players.map((p) => ({
     ...p,
@@ -44,6 +47,8 @@ export function dealNewHand(state: GameState): GameState {
   const dealerButtonIndex = nextActiveIndex(players, state.dealerButtonIndex, (p) => !p.hasFolded)
   const log: ActionLogEntry[] = []
 
+  log.push(logEntry(`Hand #${handNumber} — Ante: $${ante}. ${players[dealerButtonIndex].name} deals.`))
+
   if (eligibleCount < 2) {
     return {
       ...state,
@@ -55,28 +60,25 @@ export function dealNewHand(state: GameState): GameState {
       dealerButtonIndex,
       currentTurnPlayerId: null,
       currentBet: 0,
-      minRaise: state.bigBlind,
+      minRaise: ante,
+      currentAnte: ante,
+      handNumber,
       results: null,
-      actionLog: [...state.actionLog, logEntry('Waiting for at least 2 players with chips to start a hand.')],
+      actionLog: [...state.actionLog, ...log, logEntry('Waiting for at least 2 players with chips.')],
     }
   }
 
-  const bigBlind = state.bigBlind
-  const smallBlind = Math.max(1, Math.floor(bigBlind / 2))
+  // Everyone posts the ante
+  players = players.map((p) => {
+    if (p.hasFolded) return p
+    const pay = Math.min(ante, p.chips)
+    const isAllIn = p.chips - pay === 0
+    log.push(logEntry(`${p.name} posts $${pay} ante${isAllIn ? ' (all-in)' : ''}.`))
+    return { ...p, chips: p.chips - pay, streetContribution: pay, totalContribution: pay, isAllIn }
+  })
 
-  // Heads-up: dealer posts small blind and acts first preflop.
-  const sbIndex = eligibleCount === 2
-    ? dealerButtonIndex
-    : nextActiveIndex(players, dealerButtonIndex, (p) => !p.hasFolded)
-  const bbIndex = nextActiveIndex(players, sbIndex, (p) => !p.hasFolded)
-
-  players = postBlind(players, sbIndex, smallBlind, log)
-  players = postBlind(players, bbIndex, bigBlind, log)
-
-  const currentTurnIndex = nextActiveIndex(players, bbIndex, canAct)
-
-  log.push(logEntry(`New hand. ${players[dealerButtonIndex].name} is the dealer.`))
-  log.push(logEntry(`${players[currentTurnIndex].name} is up next.`))
+  const firstToActIndex = nextActiveIndex(players, dealerButtonIndex, canAct)
+  log.push(logEntry(`${players[firstToActIndex].name} is up first.`))
 
   return {
     ...state,
@@ -90,24 +92,16 @@ export function dealNewHand(state: GameState): GameState {
       eligiblePlayerIds: players.filter((p) => !p.hasFolded).map((p) => p.id),
     }],
     dealerButtonIndex,
-    currentTurnPlayerId: players[currentTurnIndex].id,
-    currentBet: bigBlind,
-    minRaise: bigBlind,
+    currentTurnPlayerId: players[firstToActIndex].id,
+    currentBet: 0,
+    minRaise: ante,
+    currentAnte: ante,
+    handNumber,
     results: null,
     actionLog: [...state.actionLog, ...log],
   }
 }
 
-function postBlind(players: Player[], index: number, amount: number, log: ActionLogEntry[]): Player[] {
-  return players.map((p, i) => {
-    if (i !== index) return p
-    const pay = Math.min(amount, p.chips)
-    log.push(logEntry(`${p.name} posts ${amount === pay ? `$${pay}` : `$${pay} (all-in)`} blind.`))
-    return { ...p, chips: p.chips - pay, streetContribution: pay, totalContribution: pay, isAllIn: p.chips - pay === 0 }
-  })
-}
-
-/** Applies a validated action and returns the updated state. */
 export function applyAction(state: GameState, action: Action): GameState {
   const playerIndex = state.players.findIndex((p) => p.id === action.playerId)
   if (playerIndex === -1) return state
@@ -165,7 +159,6 @@ export function applyAction(state: GameState, action: Action): GameState {
       if (target > currentBet) {
         currentBet = target
         if (isFullRaise) minRaise = raiseIncrement
-        // A raise reopens action for everyone else still in the hand.
         players = players.map((p, i) => i !== playerIndex && canAct(p) ? { ...p, hasActed: false } : p)
         log.push(logEntry(`${player.name} raises to $${target}${newChips === 0 ? ' (all-in)' : ''}.`))
       } else {
@@ -230,13 +223,12 @@ function moveToNextStreet(state: GameState): GameState {
     street: nextStreet,
     pots,
     currentBet: 0,
-    minRaise: state.bigBlind,
+    minRaise: state.currentAnte,
     currentTurnPlayerId: contenderCount >= 2 ? players[firstToActIndex].id : null,
     actionLog: [...state.actionLog, ...log],
   }
 }
 
-/** Reveals remaining community cards, evaluates each pot, and distributes chips. */
 export function runShowdown(state: GameState): GameState {
   let deck = [...state.deck]
   let communityCards = [...state.communityCards]
@@ -307,11 +299,6 @@ export function runShowdown(state: GameState): GameState {
   }
 }
 
-/**
- * Builds main pot + side pots from each player's total contribution.
- * NOTE: This will be extracted to poker-betting once that package is fleshed out.
- * It lives here temporarily so gameState.ts is self-contained.
- */
 export function collectIntoPots(players: Player[]): Pot[] {
   const contributions = players
     .filter((p) => p.totalContribution > 0)

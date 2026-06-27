@@ -74,7 +74,14 @@ export interface GameState {
   /** Minimum size of the next raise. */
   minRaise: number;
   startingChips: number;
-  bigBlind: number;
+  /** Ante amount for the current hand (derived from handNumber + handsPerLevel). */
+  currentAnte: number;
+  /** Starting ante amount (level 1). Doubles each level. */
+  startingAnte: number;
+  /** How many hands before the ante doubles. */
+  handsPerLevel: number;
+  /** Total hands dealt so far (increments each dealNewHand). */
+  handNumber: number;
   actionLog: ActionLogEntry[];
   results: ShowdownResult[] | null;
 }
