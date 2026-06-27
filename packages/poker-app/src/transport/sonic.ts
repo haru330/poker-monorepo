@@ -7,10 +7,7 @@
 import ggwaveFactory from 'ggwave'
 
 interface GGWave {
-  ProtocolId: {
-    GGWAVE_PROTOCOL_ULTRASOUND_FASTEST: unknown
-    GGWAVE_PROTOCOL_AUDIBLE_FAST: unknown
-  }
+  ProtocolId: Record<string, unknown>
   getDefaultParameters(): {
     sampleRateInp: number
     sampleRateOut: number
@@ -24,17 +21,29 @@ interface GGWave {
 
 const CHUNK_PAYLOAD = 120   // bytes of real data per ggwave packet
 const HEADER_SIZE   = 2     // [totalChunks u8, chunkIndex u8]
-const VOLUME        = 10    // 0–100, 10 is quiet but detectable
+const VOLUME        = 15    // 0–100
+
+// AUDIBLE_FAST makes a chirping sound but works on all phone speakers/mics.
+// Switch to ULTRASOUND_FASTEST once confirmed working on target devices.
+const USE_PROTOCOL = 'AUDIBLE_FAST' as const
 
 let gw: GGWave | null = null
 let gwInst = -1
+let nativeSampleRate = 48000  // resolved on first use
 
 async function getGW(): Promise<GGWave> {
   if (gw) return gw
+
+  // Detect the device's native AudioContext sample rate before initialising
+  // ggwave — a mismatch causes encode/decode to silently produce garbage.
+  const probe = new AudioContext()
+  nativeSampleRate = probe.sampleRate
+  await probe.close()
+
   gw = await ggwaveFactory() as GGWave
   const p = gw.getDefaultParameters()
-  p.sampleRateInp = 48000
-  p.sampleRateOut = 48000
+  p.sampleRateInp = nativeSampleRate
+  p.sampleRateOut = nativeSampleRate
   gwInst = gw.init(p)
   return gw
 }
@@ -50,7 +59,7 @@ function toFloat32(raw: Int8Array): Float32Array {
 export async function playSonicData(data: Uint8Array): Promise<void> {
   const m = await getGW()
   const totalChunks = Math.ceil(data.length / CHUNK_PAYLOAD)
-  const ctx = new AudioContext({ sampleRate: 48000 })
+  const ctx = new AudioContext({ sampleRate: nativeSampleRate })
 
   let nextStart = ctx.currentTime + 0.15  // brief initial silence
 
@@ -61,7 +70,7 @@ export async function playSonicData(data: Uint8Array): Promise<void> {
     packet[1] = i
     packet.set(payload, HEADER_SIZE)
 
-    const proto    = m.ProtocolId.GGWAVE_PROTOCOL_ULTRASOUND_FASTEST
+    const proto    = m.ProtocolId[`GGWAVE_PROTOCOL_${USE_PROTOCOL}`]
     const rawBytes = m.encode(gwInst, packet, proto, VOLUME)
     const samples  = toFloat32(rawBytes)
 
@@ -94,9 +103,9 @@ export async function startSonicListener(
   const m = await getGW()
 
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { sampleRate: 48000, echoCancellation: false, noiseSuppression: false },
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
   })
-  const ctx       = new AudioContext({ sampleRate: 48000 })
+  const ctx       = new AudioContext({ sampleRate: nativeSampleRate })
   const micSrc    = ctx.createMediaStreamSource(stream)
   // ScriptProcessor is deprecated but remains the only cross-browser way
   // to feed raw PCM samples to ggwave's WASM decode loop.
