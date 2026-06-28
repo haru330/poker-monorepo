@@ -355,9 +355,16 @@ export function SimulatorPage({
                   const color = playerColor(playerIdx)
                   if (!isMultiplayer || amSpectator) {
                     const se = spectatorEquity ? findEquity(spectatorEquity, p.id) : null
-                    if (!se) return null
-                    winPct = se.win * 100; tiePct = se.tie * 100
-                    label = `${Math.round(winPct)}%${tiePct > 0.5 ? ` (+${Math.round(tiePct)}% tie)` : ''}`
+                    if (se) {
+                      winPct = se.win * 100; tiePct = se.tie * 100
+                      label = `${Math.round(winPct)}%${tiePct > 0.5 ? ` (+${Math.round(tiePct)}% tie)` : ''}`
+                    } else {
+                      // Preflop: no exact equity yet — use range equity vs random
+                      const re = rangeEquity ? findEquity(rangeEquity, p.id) : null
+                      if (!re) return null
+                      winPct = re.win * 100; tiePct = re.tie * 100
+                      label = `${Math.round(winPct)}%${tiePct > 0.5 ? ` (+${Math.round(tiePct)}% tie)` : ''}`
+                    }
                   } else if (p.id === myPlayerId) {
                     const re = rangeEquity ? findEquity(rangeEquity, p.id) : null
                     if (!re) return null
@@ -485,7 +492,7 @@ export function SimulatorPage({
       ) : isShowdown && revealedCount >= 5 ? (
         <div style={{ textAlign: 'center' }}>
           {(() => {
-            const amHost = !isMultiplayer || !!state.players.find((p) => p.id === myPlayerId)?.isHost || !!state.players.find((p) => p.id === myPlayerId)?.isSpectator
+            const amHost = !isMultiplayer || !!state.players.find((p) => p.id === myPlayerId)?.isHost
             return amHost
               ? <button onClick={nextHand} style={btnStyle('primary')}>Next hand →</button>
               : <p style={{ color: '#64748b', fontSize: 14 }}>Waiting for host to deal next hand…</p>
