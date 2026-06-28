@@ -83,6 +83,16 @@ export class RTCHostTransport implements Transport {
       }
     }
 
+    pc.onicecandidate = (ev) => {
+      if (!ev.candidate) return
+      const type = ev.candidate.type ?? 'unknown'
+      if (type === 'relay') {
+        devLog('info', `[RTCHost] TURN relay candidate slot=${slot} — falling back to TURN server (cross-network)`)
+      } else {
+        devLog('debug', `[RTCHost] ICE candidate slot=${slot} type=${type}`)
+      }
+    }
+
     this.peers.push(pc)
     this.channels.push(ch)
 
@@ -316,6 +326,16 @@ export class RTCGuestTransport implements Transport {
       devLog('debug', `[RTCGuest] ICE state: ${this.pc.iceConnectionState}`)
       if (this.pc.iceConnectionState === 'failed') {
         opts.onRejected('Could not reach host — make sure both devices are on the same hotspot or Wi-Fi network.')
+      }
+    }
+
+    this.pc.onicecandidate = (ev) => {
+      if (!ev.candidate) return
+      const type = ev.candidate.type ?? 'unknown'
+      if (type === 'relay') {
+        devLog('info', `[RTCGuest] TURN relay candidate — falling back to TURN server (cross-network)`)
+      } else {
+        devLog('debug', `[RTCGuest] ICE candidate type=${type}`)
       }
     }
 
