@@ -85,12 +85,12 @@ export class PeerHostTransport implements Transport {
     conn.on('error', (e) => devLog('error', `[PeerHost] conn error connId=${conn.connectionId}: ${e}`))
     const pc = (conn as unknown as { peerConnection: RTCPeerConnection }).peerConnection
     if (pc) {
-      pc.onicecandidate = (ev) => {
+      pc.addEventListener('icecandidate', (ev) => {
         if (!ev.candidate) return
         const type = ev.candidate.type ?? 'unknown'
         if (type === 'relay') devLog('info', `[PeerHost] TURN relay candidate connId=${conn.connectionId} — falling back to TURN server (cross-network)`)
         else devLog('debug', `[PeerHost] ICE candidate connId=${conn.connectionId} type=${type}`)
-      }
+      })
     }
   }
 
@@ -322,12 +322,12 @@ export class PeerGuestTransport implements Transport {
 
       const pc = (conn as unknown as { peerConnection: RTCPeerConnection }).peerConnection
       if (pc) {
-        pc.onicecandidate = (ev) => {
+        pc.addEventListener('icecandidate', (ev) => {
           if (!ev.candidate) return
           const type = ev.candidate.type ?? 'unknown'
           if (type === 'relay') devLog('info', `[PeerGuest] TURN relay candidate — falling back to TURN server (cross-network)`)
           else devLog('debug', `[PeerGuest] ICE candidate type=${type}`)
-        }
+        })
       }
 
       conn.on('open', () => {
