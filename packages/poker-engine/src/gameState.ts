@@ -264,6 +264,9 @@ function advance(state: GameState): GameState {
 
     if (s.street === 'river') return runShowdown(s)
     s = moveToNextStreet(s)
+    // moveToNextStreet already set currentTurnPlayerId for the new street.
+    // Only continue the loop for all-in runouts where nobody can act.
+    if (s.currentTurnPlayerId !== null) return s
   }
 }
 

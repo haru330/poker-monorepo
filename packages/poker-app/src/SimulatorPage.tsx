@@ -141,17 +141,10 @@ export function SimulatorPage({
     if (!currentPlayer) return
     setRaiseInput('')
     if (onAction) {
-      setIsCalculating(true)
       onAction({ playerId: currentPlayer.id, type, amount })
-    } else if (state!.street === 'preflop') {
-      setIsCalculating(true)
-      const pid = currentPlayer.id
-      setTimeout(() => {
-        setInternalState((s) => s ? applyAction(s, { playerId: pid, type, amount }) : s)
-        setIsCalculating(false)
-      }, 0)
     } else {
-      setInternalState((s) => s ? applyAction(s, { playerId: currentPlayer.id, type, amount }) : s)
+      const pid = currentPlayer.id
+      setInternalState((s) => s ? applyAction(s, { playerId: pid, type, amount }) : s)
     }
   }
 

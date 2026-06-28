@@ -245,7 +245,7 @@ export class SupabaseGuestTransport implements Transport {
   constructor(private opts: SupabaseGuestOptions) {
     const token = localStorage.getItem('poker-session-token') ?? crypto.randomUUID()
     localStorage.setItem('poker-session-token', token)
-    const name = localStorage.getItem('poker-username') ?? opts.name
+    const name = opts.name
     localStorage.setItem('poker-username', name)
     this.playerId = token
     this.roomCode = opts.roomCode.toUpperCase()
