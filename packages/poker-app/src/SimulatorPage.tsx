@@ -93,7 +93,10 @@ export function SimulatorPage({
     </div>
   )
 
-  const currentPlayer = state.players.find((p) => p.id === state.currentTurnPlayerId) ?? null
+  // Spectators are observers only — exclude from all game display and logic
+  const gamePlayers = state.players.filter((p) => !p.isSpectator)
+
+  const currentPlayer = gamePlayers.find((p) => p.id === state.currentTurnPlayerId) ?? null
   const totalPot = state.pots.reduce((s, p) => s + p.amount, 0)
   const isShowdown = state.street === 'showdown'
   const isWaiting = state.currentTurnPlayerId === null && !isShowdown
@@ -102,8 +105,8 @@ export function SimulatorPage({
   const revealedCount = isMultiplayer
     ? (externalState?.allInRevealCount ?? (isShowdown ? state.communityCards.length : 0))
     : localRevealedCount
-  const gameOver = (isShowdown || isWaiting) && state.players.filter((p) => p.chips > 0).length <= 1
-  const disconnectedWithChips = state.players.filter((p) => p.status === 'disconnected' && p.chips > 0)
+  const gameOver = (isShowdown || isWaiting) && gamePlayers.filter((p) => p.chips > 0).length <= 1
+  const disconnectedWithChips = gamePlayers.filter((p) => p.status === 'disconnected' && p.chips > 0)
 
   // All-in runout: how many community cards to show (controlled reveal)
   const isAllInRunout = isShowdown && state.communityCards.length === 5 && revealedCount < 5
@@ -131,8 +134,8 @@ export function SimulatorPage({
   })()
 
   // Who controls the all-in reveal button
-  const allInController = state.players.find(p => p.id === state.lastAllInCallerId)
-    ?? state.players.find(p => p.isAllIn)
+  const allInController = gamePlayers.find(p => p.id === state.lastAllInCallerId)
+    ?? gamePlayers.find(p => p.isAllIn)
 
   function act(type: Action['type'], amount?: number) {
     if (!currentPlayer) return
@@ -292,7 +295,7 @@ export function SimulatorPage({
 
       {/* Players */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-        {state.players.map((p, playerIdx) => {
+        {gamePlayers.map((p, playerIdx) => {
           const isTurn = p.id === state.currentTurnPlayerId
           const isOut = p.chips === 0 && !isTurn
           const handEval = !p.hasFolded && p.hand.length > 0
@@ -458,7 +461,7 @@ export function SimulatorPage({
       {gameOver ? (
         <div style={{ textAlign: 'center' }}>
           <div style={{ marginBottom: 10, color: '#fbbf24', fontWeight: 'bold' }}>
-            Game over! {state.players.find((p) => p.chips > 0)?.name ?? '—'} wins!
+            Game over! {gamePlayers.find((p) => p.chips > 0)?.name ?? '—'} wins!
           </div>
           <button onClick={restart} style={btnStyle('primary')}>Play again</button>
         </div>
@@ -482,7 +485,7 @@ export function SimulatorPage({
       ) : isShowdown && revealedCount >= 5 ? (
         <div style={{ textAlign: 'center' }}>
           {(() => {
-            const amHost = !isMultiplayer || !!state.players.find((p) => p.id === myPlayerId)?.isHost
+            const amHost = !isMultiplayer || !!state.players.find((p) => p.id === myPlayerId)?.isHost || !!state.players.find((p) => p.id === myPlayerId)?.isSpectator
             return amHost
               ? <button onClick={nextHand} style={btnStyle('primary')}>Next hand →</button>
               : <p style={{ color: '#64748b', fontSize: 14 }}>Waiting for host to deal next hand…</p>
@@ -540,7 +543,7 @@ export function SimulatorPage({
         <div style={{ marginTop: 10, background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: 8 }}>
           <div style={{ fontSize: 11, color: '#475569', marginBottom: 6 }}>🔧 Set chips (test)</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {state.players.map((p) => (
+            {gamePlayers.map((p) => (
               <div key={p.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                 <span style={{ fontSize: 11, color: '#64748b' }}>{p.name}:</span>
                 <input
