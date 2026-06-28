@@ -8,6 +8,7 @@ import { devLog } from '../devLog'
 interface TransportCtx {
   transport: Transport | null
   gameState: GameState | null
+  myPlayerId: string | null
   pairing: PairingPhase
   qrPayload: string | null
   error: string | null
@@ -31,9 +32,17 @@ export function useTransport(): TransportCtx {
   return ctx
 }
 
+// Read or create the local session token — same key used by both transport classes
+function getOrCreateToken(): string {
+  let t = localStorage.getItem('poker-session-token')
+  if (!t) { t = crypto.randomUUID(); localStorage.setItem('poker-session-token', t) }
+  return t
+}
+
 export function TransportProvider({ children }: { children: ReactNode }) {
   const [transport, setTransport] = useState<Transport | null>(null)
   const [gameState, setGameState] = useState<GameState | null>(null)
+  const [myPlayerId, setMyPlayerId] = useState<string | null>(null)
   const [pairing, setPairing] = useState<PairingPhase>({ step: 'idle' })
   const [qrPayload, setQrPayload] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -47,6 +56,8 @@ export function TransportProvider({ children }: { children: ReactNode }) {
 
   function hostOnline(name: string) {
     devLog('info', `[TransportProvider] hostOnline: ${name}`)
+    const token = getOrCreateToken()
+    setMyPlayerId(token)
     const t = new PeerHostTransport({
       hostName: name,
       onState: setGameState,
@@ -59,6 +70,8 @@ export function TransportProvider({ children }: { children: ReactNode }) {
 
   function hostOffline(name: string) {
     devLog('info', `[TransportProvider] hostOffline: ${name}`)
+    const token = getOrCreateToken()
+    setMyPlayerId(token)
     const t = new RTCHostTransport({
       hostName: name,
       onState: setGameState,
@@ -78,6 +91,9 @@ export function TransportProvider({ children }: { children: ReactNode }) {
 
   function joinFromQR(raw: string, name: string) {
     devLog('info', `[TransportProvider] joinFromQR, name=${name}`)
+    const token = getOrCreateToken()
+    setMyPlayerId(token)
+
     let payload: QRPayload
     try { payload = JSON.parse(raw) } catch {
       devLog('error', '[TransportProvider] joinFromQR: invalid JSON')
@@ -127,6 +143,7 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     transport?.leave()
     setTransport(null)
     setGameState(null)
+    setMyPlayerId(null)
     setQrPayload(null)
     setPairing({ step: 'idle' })
     setError(null)
@@ -136,7 +153,7 @@ export function TransportProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      transport, gameState, pairing, qrPayload, error, lastPing,
+      transport, gameState, myPlayerId, pairing, qrPayload, error, lastPing,
       hostOnline, hostOffline, joinFromQR,
       scanNextGuest, onAnswerScanned, leave,
     }}>

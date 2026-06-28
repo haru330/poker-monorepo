@@ -28,6 +28,8 @@ export interface Player {
   hasFolded: boolean;
   isAllIn: boolean;
   isHost: boolean;
+  /** True when the player is watching only — no cards dealt, no antes, sees all hands. */
+  isSpectator?: boolean;
   /** Chips put in during the current street (reset each street). */
   streetContribution: number;
   /** Chips put in during the current hand (reset each hand, used for side pots). */
@@ -61,6 +63,18 @@ export interface ShowdownResult {
 }
 
 export interface GameState {
+  /** Pre-computed equity data (set at dealNewHand, null until first hand). */
+  equity: import('./equity').HandEquity | null
+  /** Player ID of the last person to call an all-in bet (controls runout reveal). */
+  lastAllInCallerId: string | null
+  /** How many community cards are currently revealed during an all-in runout (0–5). Host-managed, synced to clients. */
+  allInRevealCount?: number
+  /**
+   * Strongest preflop action each player has taken this hand.
+   * Used to narrow range equity after the flop: raise→top 20%, call→top 45%, check→top 70%.
+   * Reset each hand. Players who fold before acting have no entry.
+   */
+  preflopAction: Record<string, 'raise' | 'call' | 'check'>
   roomCode: string;
   players: Player[];
   deck: Card[];

@@ -3,6 +3,7 @@ import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, PairingPhase, QRAnswer, QRPayload, ServerMessage, Transport } from './types'
 import { compressSdp, decompressSdp, compressSdpToBytes, decompressSdpFromBytes } from './sdp'
 import { devLog } from '../devLog'
+import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -39,15 +40,18 @@ export class RTCHostTransport implements Transport {
   private slotToPlayer = new Map<number, string>()
   private state: GameState = INITIAL_STATE
   private opts: RTCHostOptions
+  private hostPlayerId: string
+  private allInRevealCount = 0
 
   constructor(opts: RTCHostOptions) {
     this.opts = opts
     devLog('info', `[RTCHost] created, hostName=${opts.hostName}`)
     const token = localStorage.getItem('poker-session-token') ?? crypto.randomUUID()
     localStorage.setItem('poker-session-token', token)
+    this.hostPlayerId = token
     const player = createPlayer(token, opts.hostName, this.state.startingChips, true)
     this.state = { ...this.state, players: [player] }
-    opts.onState(this.state)
+    opts.onState(filterStateForPlayer(this.state, this.hostPlayerId))
   }
 
   async offerNext(): Promise<void> {
@@ -103,21 +107,46 @@ export class RTCHostTransport implements Transport {
 
   sendAction(action: Parameters<Transport['sendAction']>[0]): void {
     devLog('info', `[RTCHost] sendAction ${action.type}`)
-    this.state = applyAction(this.state, action)
-    this.broadcastState()
+    this.runAction(action)
   }
 
   startGame(): void {
     devLog('info', `[RTCHost] startGame, players=${this.state.players.length}`)
-    const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
-    this.state = dealNewHand({ ...this.state, players })
-    devLog('info', `[RTCHost] game started, turn=${this.state.currentTurnPlayerId}`)
-    this.broadcastState()
+    this.allInRevealCount = 0
+    setTimeout(() => {
+      const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
+      this.state = dealNewHand({ ...this.state, players })
+      devLog('info', `[RTCHost] game started, turn=${this.state.currentTurnPlayerId}`)
+      this.broadcastState()
+    }, 0)
   }
 
   nextHand(): void {
     devLog('info', `[RTCHost] nextHand`)
-    this.state = dealNewHand(this.state)
+    this.allInRevealCount = 0
+    setTimeout(() => {
+      this.state = dealNewHand(this.state)
+      this.broadcastState()
+    }, 0)
+  }
+
+  revealCard(): void {
+    devLog('info', `[RTCHost] revealCard, count=${this.allInRevealCount}`)
+    if (this.state.street === 'showdown' && this.allInRevealCount < 5) {
+      this.allInRevealCount++
+      this.broadcastState()
+    }
+  }
+
+  toggleSpectator(): void {
+    if (this.state.handNumber !== 0) return
+    devLog('info', `[RTCHost] toggleSpectator for host`)
+    this.state = {
+      ...this.state,
+      players: this.state.players.map((p) =>
+        p.id === this.hostPlayerId ? { ...p, isSpectator: !p.isSpectator } : p
+      ),
+    }
     this.broadcastState()
   }
 
@@ -133,13 +162,35 @@ export class RTCHostTransport implements Transport {
     this.peers.forEach((pc) => pc.close())
   }
 
+  // Defer applyAction through setTimeout so the browser can paint a loading state
+  // before the synchronous equity computation blocks the main thread.
+  private runAction(action: Parameters<typeof applyAction>[1]): void {
+    setTimeout(() => {
+      const prevCommunityCount = this.state.communityCards.length
+      const prevStreet = this.state.street
+      this.state = applyAction(this.state, action)
+      if (this.state.street === 'showdown' && prevStreet !== 'showdown' && this.state.lastAllInCallerId) {
+        this.allInRevealCount = prevCommunityCount
+      }
+      this.broadcastState()
+    }, 0)
+  }
+
+  private stateWithReveal(): GameState {
+    return this.state.lastAllInCallerId && this.state.street === 'showdown'
+      ? { ...this.state, allInRevealCount: this.allInRevealCount }
+      : this.state
+  }
+
   private broadcastState(): void {
-    const msg: ServerMessage = { type: 'STATE', state: this.state }
     devLog('debug', `[RTCHost] broadcasting STATE, channels=${this.channels.length}, turn=${this.state.currentTurnPlayerId}`)
-    this.opts.onState(this.state)
-    this.channels.forEach((ch) => {
-      if (ch.readyState === 'open') ch.send(JSON.stringify(msg))
-      else devLog('warn', `[RTCHost] channel not open (${ch.readyState}), STATE not sent`)
+    const s = this.stateWithReveal()
+    this.opts.onState(filterStateForPlayer(s, this.hostPlayerId))
+    this.channels.forEach((ch, slot) => {
+      if (ch.readyState !== 'open') { devLog('warn', `[RTCHost] channel not open (${ch.readyState}), STATE not sent`); return }
+      const peerId = this.slotToPlayer.get(slot)
+      const filtered = peerId ? filterStateForPlayer(s, peerId) : s
+      ch.send(JSON.stringify({ type: 'STATE', state: filtered } satisfies ServerMessage))
     })
   }
 
@@ -178,7 +229,27 @@ export class RTCHostTransport implements Transport {
       case 'ACTION':
         if (msg.action.playerId === this.state.currentTurnPlayerId) {
           devLog('info', `[RTCHost] action ${msg.action.type} slot=${slot}`)
-          this.state = applyAction(this.state, msg.action)
+          this.runAction(msg.action)
+        }
+        break
+      case 'TOGGLE_SPECTATOR': {
+        const pid = this.slotToPlayer.get(slot)
+        if (pid && this.state.handNumber === 0) {
+          devLog('info', `[RTCHost] TOGGLE_SPECTATOR slot=${slot} pid=${pid}`)
+          this.state = {
+            ...this.state,
+            players: this.state.players.map((p) =>
+              p.id === pid ? { ...p, isSpectator: !p.isSpectator } : p
+            ),
+          }
+          this.broadcastState()
+        }
+        break
+      }
+      case 'REVEAL_CARD':
+        devLog('info', `[RTCHost] REVEAL_CARD from slot=${slot}`)
+        if (this.state.street === 'showdown' && this.allInRevealCount < 5) {
+          this.allInRevealCount++
           this.broadcastState()
         }
         break
@@ -316,8 +387,10 @@ export class RTCGuestTransport implements Transport {
   sendAction(action: Parameters<Transport['sendAction']>[0]): void {
     this.send({ type: 'ACTION', action })
   }
-  startGame(): void { this.send({ type: 'START_GAME' }) }
-  nextHand(): void  { this.send({ type: 'NEXT_HAND' }) }
+  startGame(): void        { this.send({ type: 'START_GAME' }) }
+  nextHand(): void         { this.send({ type: 'NEXT_HAND' }) }
+  revealCard(): void       { this.send({ type: 'REVEAL_CARD' }) }
+  toggleSpectator(): void  { this.send({ type: 'TOGGLE_SPECTATOR' }) }
   devPing(playerName: string): void {
     devLog('info', `[RTCGuest] sending DEV_PING: ${playerName}`)
     this.send({ type: 'DEV_PING', playerName })
@@ -334,36 +407,5 @@ export class RTCGuestTransport implements Transport {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-function createPlayer(id: string, name: string, chips: number, isHost: boolean) {
-  return {
-    id, name, chips, hand: [] as never[],
-    status: 'connected' as const, hasFolded: false,
-    isAllIn: false, isHost, streetContribution: 0,
-    totalContribution: 0, hasActed: false,
-  }
-}
-
-const INITIAL_STATE = {
-  roomCode: 'LOCAL',
-  players: [] as never[],
-  deck: [] as never[],
-  communityCards: [] as never[],
-  street: 'preflop' as const,
-  pots: [] as never[],
-  dealerButtonIndex: -1,
-  currentTurnPlayerId: null,
-  currentBet: 0,
-  minRaise: 2,
-  startingChips: 100,
-  currentAnte: 2,
-  startingAnte: 2,
-  handsPerLevel: 5,
-  handNumber: 0,
-  actionLog: [] as never[],
-  results: null,
-}
-
-// Keep these exported for potential future sonic use — not wired to UI
+// Keep these exported for potential future use — not wired to UI
 export { compressSdpToBytes, decompressSdpFromBytes }

@@ -15,6 +15,8 @@ export interface Transport {
   sendAction(action: Action): void
   startGame(): void
   nextHand(): void
+  revealCard(): void
+  toggleSpectator(): void
   devPing(playerName: string): void
   leave(): void
 }
@@ -29,12 +31,14 @@ export type PairingPhase =
 
 // ── Wire messages ──────────────────────────────────────────────────────────
 export type ClientMessage =
-  | { type: 'JOIN';       name: string; sessionToken: string }
-  | { type: 'ACTION';     action: Action }
+  | { type: 'JOIN';        name: string; sessionToken: string }
+  | { type: 'ACTION';      action: Action }
   | { type: 'START_GAME' }
   | { type: 'NEXT_HAND' }
+  | { type: 'REVEAL_CARD' }
+  | { type: 'TOGGLE_SPECTATOR' }
   | { type: 'PING' }
-  | { type: 'DEV_PING';  playerName: string }
+  | { type: 'DEV_PING';   playerName: string }
 
 export type ServerMessage =
   | { type: 'ROOM_CREATED';        roomCode: string }

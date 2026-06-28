@@ -2,6 +2,7 @@ import type { Action, ActionLogEntry, GameState, Player, Pot, ShowdownResult, St
 import { freshDeck, shuffle } from './deck'
 import { compareHands, evaluateHand } from './handEvaluator'
 import { describeHand, tiebreakDescription } from './presentation'
+import { precomputeEquity, recomputeRangeEquity } from './equity'
 
 function logEntry(message: string): ActionLogEntry {
   return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, message }
@@ -25,30 +26,21 @@ export function computeAnte(state: GameState): number {
 
 export function dealNewHand(state: GameState): GameState {
   const deck = shuffle(freshDeck())
-  const handNumber = state.handNumber + 1
-  const ante = computeAnte({ ...state, handNumber })
 
+  // Reset player state first — hasFolded if disconnected, busted, or spectating
   let players = state.players.map((p) => ({
     ...p,
     hand: [] as Player['hand'],
-    hasFolded: p.status !== 'connected' || p.chips <= 0,
+    hasFolded: p.status !== 'connected' || p.chips <= 0 || !!p.isSpectator,
     isAllIn: false,
     streetContribution: 0,
     totalContribution: 0,
     hasActed: false,
   }))
 
-  for (const player of players) {
-    if (player.hasFolded) continue
-    player.hand = [deck.pop()!, deck.pop()!]
-  }
-
   const eligibleCount = players.filter((p) => !p.hasFolded).length
-  const dealerButtonIndex = nextActiveIndex(players, state.dealerButtonIndex, (p) => !p.hasFolded)
-  const log: ActionLogEntry[] = []
 
-  log.push(logEntry(`Hand #${handNumber} — Ante: $${ante}. ${players[dealerButtonIndex].name} deals.`))
-
+  // Not enough players — return waiting state WITHOUT incrementing handNumber or charging antes
   if (eligibleCount < 2) {
     return {
       ...state,
@@ -57,49 +49,80 @@ export function dealNewHand(state: GameState): GameState {
       communityCards: [],
       street: 'preflop',
       pots: [],
-      dealerButtonIndex,
+      dealerButtonIndex: state.dealerButtonIndex,
       currentTurnPlayerId: null,
       currentBet: 0,
-      minRaise: ante,
-      currentAnte: ante,
-      handNumber,
+      minRaise: state.currentAnte,
+      currentAnte: state.currentAnte,
+      handNumber: state.handNumber,  // don't increment — no hand was played
       results: null,
-      actionLog: [...state.actionLog, ...log, logEntry('Waiting for at least 2 players with chips.')],
+      actionLog: [...state.actionLog, logEntry('Waiting for at least 2 connected players with chips.')],
     }
   }
 
-  // Everyone posts the ante
+  const handNumber = state.handNumber + 1
+  const ante = computeAnte({ ...state, handNumber })
+  const dealerButtonIndex = nextActiveIndex(players, state.dealerButtonIndex, (p) => !p.hasFolded)
+  const log: ActionLogEntry[] = []
+
+  log.push(logEntry(`Hand #${handNumber} — Ante: $${ante}. ${players[dealerButtonIndex].name} deals.`))
+
+  for (const player of players) {
+    if (player.hasFolded) continue
+    player.hand = [deck.pop()!, deck.pop()!]
+  }
+
+  // Everyone posts the ante — tracked in totalContribution for side pots
+  const antePool = { amount: 0, eligible: [] as string[] }
   players = players.map((p) => {
     if (p.hasFolded) return p
     const pay = Math.min(ante, p.chips)
     const isAllIn = p.chips - pay === 0
     log.push(logEntry(`${p.name} posts $${pay} ante${isAllIn ? ' (all-in)' : ''}.`))
-    return { ...p, chips: p.chips - pay, streetContribution: pay, totalContribution: pay, isAllIn }
+    antePool.amount += pay
+    if (!isAllIn) antePool.eligible.push(p.id)
+    else antePool.eligible.push(p.id) // all-in players still eligible for what they contributed
+    return { ...p, chips: p.chips - pay, totalContribution: pay, streetContribution: 0, isAllIn }
   })
+  // All-in edge: eligible = everyone who posted
+  antePool.eligible = players.filter((p) => p.totalContribution > 0).map((p) => p.id)
 
-  const firstToActIndex = nextActiveIndex(players, dealerButtonIndex, canAct)
-  log.push(logEntry(`${players[firstToActIndex].name} is up first.`))
+  const contenderCount = players.filter(canAct).length
+  const firstToActIndex = contenderCount > 0
+    ? nextActiveIndex(players, dealerButtonIndex, canAct)
+    : dealerButtonIndex
 
-  return {
+  if (contenderCount > 0) {
+    log.push(logEntry(`${players[firstToActIndex].name} is up first.`))
+  }
+
+  const baseState: GameState = {
     ...state,
     players,
     deck,
     communityCards: [],
     street: 'preflop',
-    pots: [{
-      id: 'main',
-      amount: players.reduce((sum, p) => sum + p.streetContribution, 0),
-      eligiblePlayerIds: players.filter((p) => !p.hasFolded).map((p) => p.id),
-    }],
+    pots: [{ id: 'main', amount: antePool.amount, eligiblePlayerIds: antePool.eligible }],
     dealerButtonIndex,
-    currentTurnPlayerId: players[firstToActIndex].id,
+    currentTurnPlayerId: contenderCount > 0 ? players[firstToActIndex].id : null,
     currentBet: 0,
     minRaise: ante,
     currentAnte: ante,
     handNumber,
     results: null,
+    lastAllInCallerId: null,
+    equity: null,
+    preflopAction: {},
     actionLog: [...state.actionLog, ...log],
   }
+
+  // Compute equity upfront — all community cards are determined by the pre-shuffled deck
+  const withEquity: GameState = { ...baseState, equity: precomputeEquity(baseState) }
+
+  // Everyone all-in from antes — go straight to showdown
+  if (contenderCount === 0) return runShowdown(withEquity)
+
+  return withEquity
 }
 
 export function applyAction(state: GameState, action: Action): GameState {
@@ -110,7 +133,21 @@ export function applyAction(state: GameState, action: Action): GameState {
   const player = players[playerIndex]
   let currentBet = state.currentBet
   let minRaise = state.minRaise
+  let lastAllInCallerId = state.lastAllInCallerId
+  let preflopAction = state.preflopAction
   const log: ActionLogEntry[] = []
+
+  // Track strongest preflop action for range narrowing (raise > call > check)
+  if (state.street === 'preflop') {
+    const prev = preflopAction[player.id]
+    const actionTier = action.type === 'raise' ? 'raise'
+      : action.type === 'call'  ? 'call'
+      : action.type === 'check' ? 'check'
+      : null
+    if (actionTier && (prev === undefined || (actionTier === 'raise') || (actionTier === 'call' && prev === 'check'))) {
+      preflopAction = { ...preflopAction, [player.id]: actionTier }
+    }
+  }
 
   switch (action.type) {
     case 'fold': {
@@ -127,17 +164,19 @@ export function applyAction(state: GameState, action: Action): GameState {
       const owed = currentBet - player.streetContribution
       const pay = Math.max(0, Math.min(owed, player.chips))
       const isAllIn = pay === player.chips && pay < owed
+      const callGoesAllIn = player.chips - pay === 0
       players[playerIndex] = {
         ...player,
         chips: player.chips - pay,
         streetContribution: player.streetContribution + pay,
         totalContribution: player.totalContribution + pay,
-        isAllIn: isAllIn || player.chips - pay === 0,
+        isAllIn: isAllIn || callGoesAllIn,
         hasActed: true,
       }
+      if (callGoesAllIn) lastAllInCallerId = player.id
       log.push(logEntry(pay === 0
         ? `${player.name} checks.`
-        : `${player.name} calls $${pay}${isAllIn ? ' (all-in)' : ''}.`))
+        : `${player.name} calls $${pay}${(isAllIn || callGoesAllIn) ? ' (all-in)' : ''}.`))
       break
     }
     case 'raise': {
@@ -168,18 +207,49 @@ export function applyAction(state: GameState, action: Action): GameState {
     }
   }
 
-  return advance({ ...state, players, currentBet, minRaise, actionLog: [...state.actionLog, ...log] })
+  return advance({ ...state, players, currentBet, minRaise, lastAllInCallerId, preflopAction, actionLog: [...state.actionLog, ...log] })
+}
+
+function foldWin(state: GameState): GameState {
+  const winner = state.players.find(isInHand)
+  const pots = collectIntoPots(state.players)
+  const totalPot = pots.reduce((s, p) => s + p.amount, 0)
+  const log: ActionLogEntry[] = []
+
+  let players = state.players.map((p) => ({ ...p, totalContribution: 0, streetContribution: 0 }))
+  if (winner) {
+    players = players.map((p) => p.id === winner.id ? { ...p, chips: p.chips + totalPot } : p)
+    log.push(logEntry(`${winner.name} wins $${totalPot} (everyone else folded).`))
+  }
+
+  return {
+    ...state,
+    players,
+    street: 'showdown',
+    pots: [],            // pot emptied — chips already in players
+    currentTurnPlayerId: null,
+    results: null,       // no cards shown on fold win
+    actionLog: [...state.actionLog, ...log],
+  }
 }
 
 function advance(state: GameState): GameState {
   let s = state
   while (true) {
     const inHand = s.players.filter(isInHand)
-    if (inHand.length <= 1) return runShowdown(s)
+    // One player left because others folded → award pot, no showdown
+    if (inHand.length <= 1) {
+      const allInPlayers = inHand.filter((p) => p.isAllIn)
+      // If the last player is all-in or we reached end of streets, do real showdown
+      if (allInPlayers.length === inHand.length && inHand.length > 0) return runShowdown(s)
+      return foldWin(s)
+    }
 
     const contenders = s.players.filter(canAct)
     const roundComplete =
-      contenders.length < 2 ||
+      contenders.length === 0 ||
+      // Lone contender has matched the bet — no one left to bet against (rest are all-in)
+      (contenders.length === 1 && contenders[0].streetContribution === s.currentBet) ||
       contenders.every((p) => p.hasActed && p.streetContribution === s.currentBet)
 
     if (!roundComplete) {
@@ -215,7 +285,7 @@ function moveToNextStreet(state: GameState): GameState {
   const log: ActionLogEntry[] = [logEntry(`${capitalize(nextStreet)}: ${newCards.map(cardLabel).join(' ')}`)]
   if (contenderCount >= 2) log.push(logEntry(`${players[firstToActIndex].name} is up next.`))
 
-  return {
+  const nextState: GameState = {
     ...state,
     players,
     deck,
@@ -227,6 +297,14 @@ function moveToNextStreet(state: GameState): GameState {
     currentTurnPlayerId: contenderCount >= 2 ? players[firstToActIndex].id : null,
     actionLog: [...state.actionLog, ...log],
   }
+
+  // On flop transition: recompute range equity using narrowed preflop ranges
+  if (state.street === 'preflop' && nextStreet === 'flop') {
+    const updatedEquity = recomputeRangeEquity(nextState)
+    if (updatedEquity) return { ...nextState, equity: updatedEquity }
+  }
+
+  return nextState
 }
 
 export function runShowdown(state: GameState): GameState {
@@ -292,7 +370,7 @@ export function runShowdown(state: GameState): GameState {
     deck,
     communityCards,
     street: 'showdown',
-    pots,
+    pots: [],            // chips already distributed — zero out to avoid double-counting
     currentTurnPlayerId: null,
     results,
     actionLog: [...state.actionLog, ...log],

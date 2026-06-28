@@ -10,9 +10,13 @@
     "typecheck": "pnpm --filter './packages/**' typecheck"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "tsx": "^4.22.4",
     "typescript": "^5.4.0"
   }
 }

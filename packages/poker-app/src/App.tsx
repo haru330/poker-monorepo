@@ -3,18 +3,21 @@ import { TransportProvider, useTransport } from './transport/TransportProvider'
 import { QRDisplay } from './qr/QRDisplay'
 import { QRScanner } from './qr/QRScanner'
 import { getDevLogs, clearDevLogs, subscribeDevLogs, type LogEntry } from './devLog'
+import { SimulatorPage } from './SimulatorPage'
 
 export default function App() {
+  const [sim, setSim] = useState(false)
+  if (sim) return <SimulatorPage onBack={() => setSim(false)} />
   return (
     <TransportProvider>
-      <Screen />
+      <Screen onOpenSim={() => setSim(true)} />
     </TransportProvider>
   )
 }
 
-function Screen() {
+function Screen({ onOpenSim }: { onOpenSim: () => void }) {
   const {
-    transport, gameState, pairing, qrPayload, error, lastPing,
+    transport, gameState, myPlayerId, pairing, qrPayload, error, lastPing,
     hostOnline, hostOffline, joinFromQR,
     scanNextGuest, onAnswerScanned, leave,
   } = useTransport()
@@ -49,6 +52,9 @@ function Screen() {
         <button onClick={() => setView('host-name')}>Host</button>
         <button onClick={() => setView('join')}>Join (scan QR)</button>
       </Row>
+      <button onClick={onOpenSim} style={{ background: '#166534', border: 'none', borderRadius: 8, padding: '8px 20px', color: '#86efac', fontWeight: 'bold', cursor: 'pointer', fontSize: 14 }}>
+        🃏 Poker Simulator
+      </button>
       <DevLogPanel />
     </Layout>
   )
@@ -162,7 +168,7 @@ function Screen() {
         </p>
       )}
       <Row>
-        {gameState && gameState.players.length >= 2 && (
+        {gameState && gameState.players.filter((p) => !p.isSpectator).length >= 2 && (
           <button onClick={() => transport?.startGame()}>Start Game</button>
         )}
         <button onClick={scanNextGuest}>Scan guest's answer →</button>
@@ -214,6 +220,20 @@ function Screen() {
     </Layout>
   )
 
+  // ── Game started: hand has been dealt — show the poker table ────────────
+  if (gameState && gameState.handNumber > 0) {
+    return (
+      <SimulatorPage
+        myPlayerId={myPlayerId ?? undefined}
+        externalState={gameState}
+        onAction={(action) => transport?.sendAction(action)}
+        onNextHand={() => transport?.nextHand()}
+        onRevealCard={() => transport?.revealCard()}
+        onBack={handleLeave}
+      />
+    )
+  }
+
   // ── Dev lobby / in-game: ping button for all players ────────────────────
   if (gameState) {
     const myName = localStorage.getItem('poker-username') ?? name
@@ -225,10 +245,22 @@ function Screen() {
         <p style={{ opacity: 0.5, fontSize: 13, margin: 0 }}>
           Room: {gameState.roomCode} — {gameState.players.length} player(s)
         </p>
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0, width: '100%', maxWidth: 280 }}>
+        <ul style={{ listStyle: 'none', padding: 0, margin: 0, width: '100%', maxWidth: 320 }}>
           {gameState.players.map((p) => (
-            <li key={p.id} style={{ padding: '3px 0', fontSize: 14, opacity: p.status === 'connected' ? 1 : 0.4 }}>
-              {p.isHost ? '👑 ' : '• '}{p.name}{p.status === 'disconnected' ? ' (off)' : ''}
+            <li key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '5px 0', fontSize: 14, opacity: p.status === 'connected' ? 1 : 0.4 }}>
+              <span>
+                {p.isHost ? '👑 ' : '• '}{p.name}
+                {p.status === 'disconnected' && ' (off)'}
+                {p.isSpectator && <span style={{ marginLeft: 6, fontSize: 11, color: '#94a3b8', background: '#1e293b', border: '1px solid #334155', borderRadius: 4, padding: '1px 6px' }}>spectator</span>}
+              </span>
+              {p.id === myPlayerId && (
+                <button
+                  onClick={() => transport?.toggleSpectator()}
+                  style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, border: '1px solid #334155', background: p.isSpectator ? '#334155' : 'transparent', color: p.isSpectator ? '#f1f5f9' : '#64748b', cursor: 'pointer' }}
+                >
+                  {p.isSpectator ? 'Join game' : 'Spectate'}
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -261,7 +293,7 @@ function Screen() {
           </button>
         )}
 
-        {transport?.role === 'host' && gameState.players.length >= 2 && (
+        {transport?.role === 'host' && gameState.players.filter((p) => !p.isSpectator).length >= 2 && (
           <button onClick={() => transport.startGame()}>Start Game</button>
         )}
 

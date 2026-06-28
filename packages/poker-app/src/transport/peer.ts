@@ -3,6 +3,7 @@ import type { GameState } from 'poker-engine'
 import { dealNewHand, applyAction } from 'poker-engine'
 import type { ClientMessage, QRPayload, ServerMessage, Transport } from './types'
 import { devLog } from '../devLog'
+import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 
 const STUN = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } }
 
@@ -20,27 +21,7 @@ function generateRoomCode(): string {
   return Array.from({ length: 4 }, () => L[Math.floor(Math.random() * 26)]).join('')
 }
 
-function createPlayer(id: string, name: string, chips: number, isHost: boolean) {
-  return {
-    id, name, chips, hand: [] as never[],
-    status: 'connected' as const, hasFolded: false,
-    isAllIn: false, isHost,
-    streetContribution: 0, totalContribution: 0, hasActed: false,
-  }
-}
-
 function stripSuffix(name: string) { return name.replace(/ \([AB]\)$/, '') }
-
-const INITIAL_STATE: GameState = {
-  roomCode: '',
-  players: [], deck: [], communityCards: [],
-  street: 'preflop', pots: [],
-  dealerButtonIndex: -1, currentTurnPlayerId: null,
-  currentBet: 0, minRaise: 0,
-  startingChips: 100,
-  currentAnte: 2, startingAnte: 2, handsPerLevel: 5, handNumber: 0,
-  actionLog: [], results: null,
-}
 
 // ── Host ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +41,8 @@ export class PeerHostTransport implements Transport {
   private conns   = new Map<string, DataConnection>()
   private connPid = new Map<string, string>()
   private state: GameState
+  private hostPlayerId = ''
+  private allInRevealCount = 0
 
   constructor(private opts: PeerHostOptions) {
     const roomCode = generateRoomCode()
@@ -70,10 +53,11 @@ export class PeerHostTransport implements Transport {
     this.peer.on('open', (id) => {
       devLog('info', `[PeerHost] peer open, id=${id}`)
       const token = sessionToken()
+      this.hostPlayerId = token
       localStorage.setItem('poker-username', opts.hostName)
       const player = createPlayer(token, opts.hostName, this.state.startingChips, true)
       this.state = { ...this.state, players: [player] }
-      opts.onState(this.state)
+      opts.onState(filterStateForPlayer(this.state, this.hostPlayerId))
       opts.onQR({ mode: 'peer', peerId: id })
     })
     this.peer.on('connection', (conn) => {
@@ -135,21 +119,45 @@ export class PeerHostTransport implements Transport {
       case 'ACTION':
         if (msg.action.playerId === this.state.currentTurnPlayerId) {
           devLog('info', `[PeerHost] action ${msg.action.type} from ${msg.action.playerId}`)
-          this.state = applyAction(this.state, msg.action)
-          this.broadcastState()
+          this.runAction(msg.action)
         }
         break
       case 'START_GAME': {
         devLog('info', `[PeerHost] START_GAME from guest`)
-        const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
-        this.state = dealNewHand({ ...this.state, players })
-        devLog('info', `[PeerHost] game started, currentTurn=${this.state.currentTurnPlayerId}`)
-        this.broadcastState(); break
+        setTimeout(() => {
+          const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
+          this.state = dealNewHand({ ...this.state, players })
+          devLog('info', `[PeerHost] game started, currentTurn=${this.state.currentTurnPlayerId}`)
+          this.broadcastState()
+        }, 0)
+        break
       }
       case 'NEXT_HAND':
-        this.state = dealNewHand(this.state)
         devLog('info', `[PeerHost] next hand dealt`)
-        this.broadcastState(); break
+        this.allInRevealCount = 0
+        setTimeout(() => { this.state = dealNewHand(this.state); this.broadcastState() }, 0)
+        break
+      case 'TOGGLE_SPECTATOR': {
+        const pid = this.connPid.get(conn.connectionId)
+        if (pid && this.state.handNumber === 0) {
+          devLog('info', `[PeerHost] TOGGLE_SPECTATOR from ${pid}`)
+          this.state = {
+            ...this.state,
+            players: this.state.players.map((p) =>
+              p.id === pid ? { ...p, isSpectator: !p.isSpectator } : p
+            ),
+          }
+          this.broadcastState()
+        }
+        break
+      }
+      case 'REVEAL_CARD':
+        devLog('info', `[PeerHost] REVEAL_CARD from guest`)
+        if (this.state.street === 'showdown' && this.allInRevealCount < 5) {
+          this.allInRevealCount++
+          this.broadcastState()
+        }
+        break
       case 'PING':
         this.send(conn, { type: 'PONG' }); break
       case 'DEV_PING': {
@@ -186,28 +194,80 @@ export class PeerHostTransport implements Transport {
 
   private send(conn: DataConnection, msg: ServerMessage) { conn.send(msg) }
 
+  // Defer applyAction through setTimeout so the browser can paint a loading state
+  // before the synchronous equity computation blocks the main thread.
+  private runAction(action: Parameters<typeof applyAction>[1]): void {
+    setTimeout(() => {
+      const prevCommunityCount = this.state.communityCards.length
+      const prevStreet = this.state.street
+      this.state = applyAction(this.state, action)
+      if (this.state.street === 'showdown' && prevStreet !== 'showdown' && this.state.lastAllInCallerId) {
+        this.allInRevealCount = prevCommunityCount
+      }
+      this.broadcastState()
+    }, 0)
+  }
+
+  private stateWithReveal(): GameState {
+    return this.state.lastAllInCallerId && this.state.street === 'showdown'
+      ? { ...this.state, allInRevealCount: this.allInRevealCount }
+      : this.state
+  }
+
   private broadcastState() {
-    const msg: ServerMessage = { type: 'STATE', state: this.state }
     devLog('debug', `[PeerHost] broadcasting STATE to ${this.conns.size} connections, players=${this.state.players.length}, turn=${this.state.currentTurnPlayerId}`)
-    this.opts.onState(this.state)
-    this.conns.forEach((c) => { if (c.open) c.send(msg) })
+    const s = this.stateWithReveal()
+    this.opts.onState(filterStateForPlayer(s, this.hostPlayerId))
+    this.conns.forEach((c, connId) => {
+      if (!c.open) return
+      const peerId = this.connPid.get(connId)
+      const filtered = peerId ? filterStateForPlayer(s, peerId) : s
+      c.send({ type: 'STATE', state: filtered } satisfies ServerMessage)
+    })
   }
 
   sendAction(action: Parameters<Transport['sendAction']>[0]) {
     devLog('info', `[PeerHost] host sendAction ${action.type}`)
-    this.state = applyAction(this.state, action)
-    this.broadcastState()
+    this.runAction(action)
   }
   startGame() {
     devLog('info', `[PeerHost] host startGame, players=${this.state.players.length}`)
-    const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
-    this.state = dealNewHand({ ...this.state, players })
-    devLog('info', `[PeerHost] game started, currentTurn=${this.state.currentTurnPlayerId}`)
-    this.broadcastState()
+    this.allInRevealCount = 0
+    setTimeout(() => {
+      const players = this.state.players.map((p) => ({ ...p, chips: this.state.startingChips }))
+      this.state = dealNewHand({ ...this.state, players })
+      devLog('info', `[PeerHost] game started, currentTurn=${this.state.currentTurnPlayerId}`)
+      this.broadcastState()
+    }, 0)
   }
   nextHand() {
     devLog('info', `[PeerHost] nextHand`)
-    this.state = dealNewHand(this.state); this.broadcastState()
+    this.allInRevealCount = 0
+    setTimeout(() => { this.state = dealNewHand(this.state); this.broadcastState() }, 0)
+  }
+  revealCard() {
+    devLog('info', `[PeerHost] revealCard, count=${this.allInRevealCount}`)
+    if (this.state.street === 'showdown' && this.allInRevealCount < 5) {
+      this.allInRevealCount++
+      this.broadcastState()
+    }
+  }
+  toggleSpectator() {
+    if (this.state.handNumber !== 0) return
+    devLog('info', `[PeerHost] toggleSpectator for host`)
+    this.state = {
+      ...this.state,
+      players: this.state.players.map((p) =>
+        p.id === this.hostPlayerId ? { ...p, isSpectator: !p.isSpectator } : p
+      ),
+    }
+    this.opts.onState(filterStateForPlayer(this.state, this.hostPlayerId))
+    this.conns.forEach((c, connId) => {
+      if (!c.open) return
+      const peerId = this.connPid.get(connId)
+      const filtered = peerId ? filterStateForPlayer(this.state, peerId) : this.state
+      c.send({ type: 'STATE', state: filtered } satisfies ServerMessage)
+    })
   }
   devPing(playerName: string) {
     devLog('info', `[PeerHost] host devPing: ${playerName}`)
@@ -281,8 +341,10 @@ export class PeerGuestTransport implements Transport {
   }
 
   sendAction(action: Parameters<Transport['sendAction']>[0]) { this.send({ type: 'ACTION', action }) }
-  startGame() { this.send({ type: 'START_GAME' }) }
-  nextHand()  { this.send({ type: 'NEXT_HAND' }) }
+  startGame()        { this.send({ type: 'START_GAME' }) }
+  nextHand()         { this.send({ type: 'NEXT_HAND' }) }
+  revealCard()       { this.send({ type: 'REVEAL_CARD' }) }
+  toggleSpectator()  { this.send({ type: 'TOGGLE_SPECTATOR' }) }
   devPing(playerName: string) {
     devLog('info', `[PeerGuest] sending DEV_PING: ${playerName}`)
     this.send({ type: 'DEV_PING', playerName })
