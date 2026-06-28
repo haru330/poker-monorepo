@@ -110,7 +110,7 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
               style={{ width: 80, textAlign: 'center', textTransform: 'uppercase', letterSpacing: 4 }}
               onChange={(e) => {
                 const v = e.target.value.toUpperCase()
-                if (v.length === 4) joinFromQR(JSON.stringify({ mode: 'peer', peerId: v }), name.trim())
+                if (v.length === 4) joinFromQR(JSON.stringify({ mode: 'supabase', roomCode: v }), name.trim())
               }}
             />
           </Row>

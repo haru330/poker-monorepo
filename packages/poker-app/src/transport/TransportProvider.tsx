@@ -3,6 +3,7 @@ import type { GameState } from 'poker-engine'
 import type { PairingPhase, QRPayload, Transport } from './types'
 import { PeerHostTransport, PeerGuestTransport } from './peer'
 import { RTCHostTransport, RTCGuestTransport } from './rtc'
+import { SupabaseHostTransport, SupabaseGuestTransport } from './supabase'
 import { devLog } from '../devLog'
 
 interface TransportCtx {
@@ -55,16 +56,15 @@ export function TransportProvider({ children }: { children: ReactNode }) {
   }
 
   function hostOnline(name: string) {
-    devLog('info', `[TransportProvider] hostOnline: ${name}`)
-    const token = getOrCreateToken()
-    setMyPlayerId(token)
-    const t = new PeerHostTransport({
+    devLog('info', `[TransportProvider] hostOnline (Supabase): ${name}`)
+    const t = new SupabaseHostTransport({
       hostName: name,
-      onState: setGameState,
+      onState: (s) => { setGameState(s); setMyPlayerId(localStorage.getItem('poker-session-token')) },
       onQR: (payload: QRPayload) => setQrPayload(JSON.stringify(payload)),
       onError: setError,
       onDevPing,
     })
+    setMyPlayerId(localStorage.getItem('poker-session-token'))
     setTransport(t)
   }
 
@@ -104,6 +104,20 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     if (payload.mode === 'peer') {
       devLog('info', `[TransportProvider] joining peer peerId=${payload.peerId}`)
       const t = new PeerGuestTransport({ payload, name, onState: setGameState, onRejected: setError, onDevPing })
+      setTransport(t)
+      return
+    }
+
+    if (payload.mode === 'supabase') {
+      devLog('info', `[TransportProvider] joining Supabase room=${payload.roomCode}`)
+      const t = new SupabaseGuestTransport({
+        roomCode: payload.roomCode,
+        name,
+        onState: (s) => { setGameState(s); setMyPlayerId(localStorage.getItem('poker-session-token')) },
+        onRejected: setError,
+        onDevPing,
+      })
+      setMyPlayerId(localStorage.getItem('poker-session-token'))
       setTransport(t)
       return
     }

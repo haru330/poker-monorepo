@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
     "ggwave": "^0.4.0",
     "pako": "^3.0.0",
     "peerjs": "^1.5.5",

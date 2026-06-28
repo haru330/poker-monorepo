@@ -4,6 +4,7 @@ import type { Action, GameState } from 'poker-engine'
 export type QRPayload =
   | { mode: 'peer'; peerId: string }
   | { mode: 'rtc';  offer: string; slot: number }
+  | { mode: 'supabase'; roomCode: string }
 
 export type QRAnswer =
   | { mode: 'rtc'; answer: string; slot: number }
