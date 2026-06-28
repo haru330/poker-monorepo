@@ -5,7 +5,15 @@ import type { ClientMessage, QRPayload, ServerMessage, Transport } from './types
 import { devLog } from '../devLog'
 import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 
-const STUN = { config: { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] } }
+const ICE_SERVERS: RTCIceServer[] = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  // Open Relay free TURN — relays traffic when direct P2P fails (cross-network, strict NAT)
+  { urls: 'turn:openrelay.metered.ca:80',              username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443',             username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+]
+
+const PEER_CONFIG = { config: { iceServers: ICE_SERVERS } }
 
 const SESSION_KEY = 'poker-session-token'
 const NAME_KEY    = 'poker-username'
@@ -48,7 +56,7 @@ export class PeerHostTransport implements Transport {
     const roomCode = generateRoomCode()
     this.state = { ...INITIAL_STATE, roomCode }
     devLog('info', `[PeerHost] creating peer with roomCode=${roomCode}`)
-    this.peer  = new Peer(roomCode, STUN)
+    this.peer  = new Peer(roomCode, PEER_CONFIG)
 
     this.peer.on('open', (id) => {
       devLog('info', `[PeerHost] peer open, id=${id}`)
@@ -296,7 +304,7 @@ export class PeerGuestTransport implements Transport {
 
   constructor(private opts: PeerGuestOptions) {
     devLog('info', `[PeerGuest] connecting to peerId=${opts.payload.peerId}`)
-    this.peer = new Peer(STUN)
+    this.peer = new Peer(PEER_CONFIG)
 
     this.peer.on('open', () => {
       devLog('info', `[PeerGuest] local peer open, connecting to host`)
