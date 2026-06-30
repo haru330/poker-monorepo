@@ -380,6 +380,25 @@ export function runShowdown(state: GameState): GameState {
   }
 }
 
+/**
+ * Remove a player from the game mid-hand. Their chips vanish (not redistributed).
+ * If it's their turn, they're folded first. Future hands exclude them.
+ */
+export function abandonPlayer(state: GameState, playerId: string): GameState {
+  let s = state
+  // If it's the abandoning player's turn, fold them first
+  if (s.currentTurnPlayerId === playerId) {
+    s = applyAction(s, { playerId, type: 'fold' })
+  }
+  // Zero chips and disconnect — excluded from all future hands
+  const players = s.players.map((p) =>
+    p.id === playerId
+      ? { ...p, chips: 0, status: 'disconnected' as const, hasFolded: true, hasActed: true }
+      : p
+  )
+  return advance({ ...s, players })
+}
+
 export function collectIntoPots(players: Player[]): Pot[] {
   const contributions = players
     .filter((p) => p.totalContribution > 0)

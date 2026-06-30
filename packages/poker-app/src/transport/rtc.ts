@@ -1,5 +1,5 @@
 import type { GameState } from 'poker-engine'
-import { dealNewHand, applyAction } from 'poker-engine'
+import { dealNewHand, applyAction, abandonPlayer } from 'poker-engine'
 import type { ClientMessage, PairingPhase, QRAnswer, QRPayload, ServerMessage, Transport } from './types'
 import { compressSdp, decompressSdp, compressSdpToBytes, decompressSdpFromBytes } from './sdp'
 import { devLog } from '../devLog'
@@ -159,6 +159,8 @@ export class RTCHostTransport implements Transport {
     this.broadcastState()
   }
 
+  abandon(): void { /* host cannot abandon */ }
+
   devPing(playerName: string): void {
     devLog('info', `[RTCHost] host devPing: ${playerName}`)
     this.opts.onDevPing(playerName)
@@ -241,6 +243,15 @@ export class RTCHostTransport implements Transport {
           this.runAction(msg.action)
         }
         break
+      case 'ABANDON': {
+        const apid = this.slotToPlayer.get(slot)
+        if (apid) {
+          devLog('info', `[RTCHost] ABANDON slot=${slot} pid=${apid}`)
+          this.state = abandonPlayer(this.state, apid)
+          this.broadcastState()
+        }
+        break
+      }
       case 'TOGGLE_SPECTATOR': {
         const pid = this.slotToPlayer.get(slot)
         if (pid && this.state.handNumber === 0) {
@@ -410,6 +421,7 @@ export class RTCGuestTransport implements Transport {
   nextHand(): void         { this.send({ type: 'NEXT_HAND' }) }
   revealCard(): void       { this.send({ type: 'REVEAL_CARD' }) }
   toggleSpectator(): void  { this.send({ type: 'TOGGLE_SPECTATOR' }) }
+  abandon(): void          { this.send({ type: 'ABANDON' }) }
   devPing(playerName: string): void {
     devLog('info', `[RTCGuest] sending DEV_PING: ${playerName}`)
     this.send({ type: 'DEV_PING', playerName })

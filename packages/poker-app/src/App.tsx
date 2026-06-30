@@ -4,6 +4,7 @@ import { QRDisplay } from './qr/QRDisplay'
 import { QRScanner } from './qr/QRScanner'
 import { getDevLogs, clearDevLogs, subscribeDevLogs, type LogEntry } from './devLog'
 import { SimulatorPage } from './SimulatorPage'
+import { type MoneyMode, DEFAULT_MONEY_MODE, CURRENCIES } from './billing/types'
 
 export default function App() {
   const [sim, setSim] = useState(false)
@@ -19,13 +20,14 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
   const {
     transport, gameState, myPlayerId, pairing, qrPayload, error, lastPing,
     hostOnline, hostOffline, joinFromQR,
-    scanNextGuest, onAnswerScanned, leave,
+    scanNextGuest, onAnswerScanned, abandon, leave,
   } = useTransport()
 
   const [view, setView] = useState<'home' | 'host-name' | 'host' | 'join' | 'scan-answer'>('home')
   const [name, setName] = useState(() => localStorage.getItem('poker-username') ?? '')
   const [manualInput, setManualInput] = useState('')
   const [showManual, setShowManual] = useState(false)
+  const [moneyMode, setMoneyMode] = useState<MoneyMode>(DEFAULT_MONEY_MODE)
 
   function handleLeave() { leave(); setView('home'); setManualInput(''); setShowManual(false) }
 
@@ -229,7 +231,9 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
         onAction={(action) => transport?.sendAction(action)}
         onNextHand={() => transport?.nextHand()}
         onRevealCard={() => transport?.revealCard()}
-        onStartGame={() => transport?.startGame()}
+        onStartGame={() => { setMoneyMode(DEFAULT_MONEY_MODE); transport?.startGame() }}
+        onAbandon={() => { abandon(); handleLeave() }}
+        moneyMode={moneyMode.enabled ? moneyMode : undefined}
         onBack={handleLeave}
       />
     )
@@ -292,6 +296,46 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
           <button onClick={() => (transport as { offerNext(): void }).offerNext()}>
             Add player (QR)
           </button>
+        )}
+
+        {/* Money mode — host only, locked once game starts */}
+        {transport?.role === 'host' && (
+          <div style={{ width: '100%', maxWidth: 320, background: '#1e293b', borderRadius: 10, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontWeight: 'bold', fontSize: 14 }}>💰 Money mode</span>
+              <button
+                onClick={() => setMoneyMode((m) => ({ ...m, enabled: !m.enabled }))}
+                style={{ background: moneyMode.enabled ? '#6366f1' : '#334155', border: 'none', borderRadius: 20, padding: '4px 14px', color: '#fff', cursor: 'pointer', fontSize: 13 }}
+              >
+                {moneyMode.enabled ? 'ON' : 'OFF'}
+              </button>
+            </div>
+            {moneyMode.enabled && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select
+                  value={moneyMode.currency}
+                  onChange={(e) => setMoneyMode((m) => ({ ...m, currency: e.target.value }))}
+                  style={{ background: '#0f172a', color: '#fff', border: '1px solid #334155', borderRadius: 6, padding: '6px 8px', fontSize: 13 }}
+                >
+                  {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <input
+                  type="number"
+                  min={0.01}
+                  step={0.5}
+                  value={moneyMode.buyIn}
+                  onChange={(e) => setMoneyMode((m) => ({ ...m, buyIn: parseFloat(e.target.value) || 0 }))}
+                  style={{ width: 70, background: '#0f172a', color: '#fff', border: '1px solid #334155', borderRadius: 6, padding: '6px 8px', fontSize: 13 }}
+                />
+                <span style={{ fontSize: 12, color: '#64748b' }}>per player</span>
+              </div>
+            )}
+            {moneyMode.enabled && (
+              <p style={{ margin: 0, fontSize: 11, color: '#64748b' }}>
+                Each chip = {(moneyMode.buyIn / gameState.startingChips).toFixed(4)} {moneyMode.currency}
+              </p>
+            )}
+          </div>
         )}
 
         {transport?.role === 'host' && gameState.players.filter((p) => !p.isSpectator).length >= 2 && (

@@ -19,6 +19,7 @@ export interface Transport {
   revealCard(): void
   toggleSpectator(): void
   devPing(playerName: string): void
+  abandon(): void
   leave(): void
 }
 
@@ -38,6 +39,7 @@ export type ClientMessage =
   | { type: 'NEXT_HAND' }
   | { type: 'REVEAL_CARD' }
   | { type: 'TOGGLE_SPECTATOR' }
+  | { type: 'ABANDON' }
   | { type: 'PING' }
   | { type: 'DEV_PING';   playerName: string }
 

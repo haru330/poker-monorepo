@@ -1,6 +1,6 @@
 import { createClient, type RealtimeChannel } from '@supabase/supabase-js'
 import type { GameState } from 'poker-engine'
-import { dealNewHand, applyAction } from 'poker-engine'
+import { dealNewHand, applyAction, abandonPlayer } from 'poker-engine'
 import type { QRPayload, Transport } from './types'
 import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 import { devLog } from '../devLog'
@@ -17,6 +17,7 @@ type ActionPayload =
   | { type: 'REVEAL_CARD' }
   | { type: 'TOGGLE_SPECTATOR' }
   | { type: 'DEV_PING'; playerName: string }
+  | { type: 'ABANDON' }
 
 function generateRoomCode(): string {
   const L = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -142,6 +143,10 @@ export class SupabaseHostTransport implements Transport {
           this.writeState()
         }
         break
+      case 'ABANDON':
+        this.state = abandonPlayer(this.state, row.player_id)
+        this.writeState()
+        break
       case 'DEV_PING':
         this.opts.onDevPing(p.playerName)
         this.channel?.send({ type: 'broadcast', event: 'dev_ping', payload: { playerName: p.playerName } })
@@ -207,6 +212,12 @@ export class SupabaseHostTransport implements Transport {
   toggleSpectator() {
     if (this.state.handNumber !== 0) return
     this.state = { ...this.state, players: this.state.players.map((p) => p.id === this.hostPlayerId ? { ...p, isSpectator: !p.isSpectator } : p) }
+    this.writeState()
+  }
+
+  abandon() {
+    devLog('info', `[SupabaseHost] abandon`)
+    this.state = abandonPlayer(this.state, this.hostPlayerId)
     this.writeState()
   }
 
@@ -324,6 +335,7 @@ export class SupabaseGuestTransport implements Transport {
   nextHand()         { this.sendToHost({ type: 'NEXT_HAND' }) }
   revealCard()       { this.sendToHost({ type: 'REVEAL_CARD' }) }
   toggleSpectator()  { this.sendToHost({ type: 'TOGGLE_SPECTATOR' }) }
+  abandon()          { this.sendToHost({ type: 'ABANDON' }) }
   startGame()        { /* host only */ }
   devPing(playerName: string) {
     devLog('info', `[SupabaseGuest] devPing: ${playerName}`)

@@ -22,6 +22,7 @@ interface TransportCtx {
   scanNextGuest(): void
   onAnswerScanned(raw: string): void
 
+  abandon(): void
   leave(): void
 }
 
@@ -152,6 +153,11 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     rtcHostRef.current?.completeHandshake(raw)
   }
 
+  function abandon() {
+    devLog('info', '[TransportProvider] abandon')
+    transport?.abandon()
+  }
+
   function leave() {
     devLog('info', '[TransportProvider] leave')
     transport?.leave()
@@ -169,7 +175,7 @@ export function TransportProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={{
       transport, gameState, myPlayerId, pairing, qrPayload, error, lastPing,
       hostOnline, hostOffline, joinFromQR,
-      scanNextGuest, onAnswerScanned, leave,
+      scanNextGuest, onAnswerScanned, abandon, leave,
     }}>
       {children}
     </Ctx.Provider>

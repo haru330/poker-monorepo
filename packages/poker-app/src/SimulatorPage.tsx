@@ -1,6 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { dealNewHand, applyAction, runShowdown, evaluateHand, describeHand } from 'poker-engine'
 import type { GameState, Action, EquityResult } from 'poker-engine'
+import { calculateBill, calculateAbandonBill } from './billing/calculate'
+import { BillDialog } from './billing/BillDialog'
+import { AbandonDialog } from './billing/AbandonDialog'
+import type { Bill, PlayerBill } from './billing/types'
 
 const isInHand = (p: { hasFolded: boolean; status: string }) => !p.hasFolded && p.status === 'connected'
 
@@ -36,7 +40,7 @@ function makeInitialState(): GameState {
 }
 
 export function SimulatorPage({
-  onBack, myPlayerId, externalState, onAction, onNextHand, onRevealCard, onStartGame,
+  onBack, myPlayerId, externalState, onAction, onNextHand, onRevealCard, onStartGame, onAbandon, moneyMode,
 }: {
   onBack: () => void
   myPlayerId?: string
@@ -45,6 +49,8 @@ export function SimulatorPage({
   onNextHand?: () => void
   onRevealCard?: () => void
   onStartGame?: () => void
+  onAbandon?: () => void
+  moneyMode?: import('./billing/types').MoneyMode
 }) {
   const isMultiplayer = !!externalState
   const [internalState, setInternalState] = useState<GameState | null>(null)
@@ -53,6 +59,8 @@ export function SimulatorPage({
   const [raiseInput, setRaiseInput] = useState('')
   const [showLog, setShowLog] = useState(false)
   const [handsPerLevel, setHandsPerLevel] = useState(5)
+  const [showBill, setShowBill] = useState(false)
+  const [abandonPending, setAbandonPending] = useState(false)
 
   // Compute first hand asynchronously so the loading screen renders first (standalone only)
   useEffect(() => {
@@ -254,8 +262,15 @@ export function SimulatorPage({
         <button onClick={onBack} style={btnStyle('ghost')}>← Back</button>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 13, color: '#64748b' }}>Hand #{state.handNumber} · Level {level} · Ante ${state.currentAnte}</div>
+          {isMultiplayer && state.roomCode && (
+            <div style={{ fontSize: 11, color: '#475569', letterSpacing: 2 }}>#{state.roomCode}</div>
+          )}
+          {moneyMode && <div style={{ fontSize: 11, color: '#f59e0b' }}>💰 {moneyMode.buyIn} {moneyMode.currency}/player</div>}
         </div>
-        {!isMultiplayer && <button onClick={restart} style={btnStyle('ghost')}>Restart</button>}
+        <div style={{ display: 'flex', gap: 6 }}>
+          {isMultiplayer && <button onClick={() => setAbandonPending(true)} style={{ ...btnStyle('ghost'), fontSize: 11, color: '#f87171' }}>Abandon</button>}
+          {!isMultiplayer && <button onClick={restart} style={btnStyle('ghost')}>Restart</button>}
+        </div>
       </div>
 
       {/* Hands per level setting — standalone only */}
@@ -466,10 +481,15 @@ export function SimulatorPage({
 
       {/* Action buttons */}
       {gameOver ? (
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ marginBottom: 10, color: '#fbbf24', fontWeight: 'bold' }}>
+        <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+          <div style={{ color: '#fbbf24', fontWeight: 'bold' }}>
             Game over! {gamePlayers.find((p) => p.chips > 0)?.name ?? '—'} wins!
           </div>
+          {moneyMode && (
+            <button onClick={() => setShowBill(true)} style={{ ...btnStyle('primary'), background: '#f59e0b' }}>
+              💰 View Bill
+            </button>
+          )}
           {amHost && <button onClick={restart} style={btnStyle('primary')}>Play again</button>}
         </div>
       ) : isWaiting ? (
@@ -581,6 +601,50 @@ export function SimulatorPage({
           </div>
         )}
       </div>
+
+      {/* Bill dialog — end of game */}
+      {showBill && moneyMode && (() => {
+        const bill = calculateBill(
+          gamePlayers.map((p) => ({ id: p.id, name: p.name, chips: p.chips })),
+          state.startingChips,
+          moneyMode,
+        )
+        return <BillDialog bill={bill} onClose={() => setShowBill(false)} />
+      })()}
+
+      {/* Abandon dialog — mid-game leave */}
+      {abandonPending && moneyMode && (() => {
+        const me = gamePlayers.find((p) => p.id === myPlayerId)
+        if (!me) return null
+        const { bill, myBill } = calculateAbandonBill(
+          { id: me.id, name: me.name, chips: me.chips },
+          gamePlayers.map((p) => ({ id: p.id, name: p.name, chips: p.chips })),
+          state.startingChips,
+          moneyMode,
+        )
+        return (
+          <AbandonDialog
+            bill={bill}
+            myBill={myBill}
+            onConfirm={() => { setAbandonPending(false); onAbandon?.() }}
+            onCancel={() => setAbandonPending(false)}
+          />
+        )
+      })()}
+
+      {/* Abandon dialog — no money mode, just confirm */}
+      {abandonPending && !moneyMode && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 }}>
+          <div style={{ background: '#1e293b', borderRadius: 14, padding: 24, maxWidth: 320, width: '100%', display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <h2 style={{ margin: 0, color: '#f87171' }}>Leave game?</h2>
+            <p style={{ margin: 0, color: '#94a3b8', fontSize: 13 }}>Your chips will be removed. This cannot be undone.</p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => { setAbandonPending(false); onAbandon?.() }} style={{ flex: 1, background: '#dc2626', border: 'none', borderRadius: 8, padding: '10px 0', fontWeight: 'bold', cursor: 'pointer', color: '#fff' }}>Leave</button>
+              <button onClick={() => setAbandonPending(false)} style={{ flex: 1, background: '#334155', border: 'none', borderRadius: 8, padding: '10px 0', cursor: 'pointer', color: '#fff' }}>Stay</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

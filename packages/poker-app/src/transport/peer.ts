@@ -1,6 +1,6 @@
 import Peer, { type DataConnection } from 'peerjs'
 import type { GameState } from 'poker-engine'
-import { dealNewHand, applyAction } from 'poker-engine'
+import { dealNewHand, applyAction, abandonPlayer } from 'poker-engine'
 import type { ClientMessage, QRPayload, ServerMessage, Transport } from './types'
 import { devLog } from '../devLog'
 import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
@@ -154,6 +154,15 @@ export class PeerHostTransport implements Transport {
         this.allInRevealCount = 0
         setTimeout(() => { this.state = dealNewHand(this.state); this.broadcastState() }, 0)
         break
+      case 'ABANDON': {
+        const apid = this.connPid.get(conn.connectionId)
+        if (apid) {
+          devLog('info', `[PeerHost] ABANDON from ${apid}`)
+          this.state = abandonPlayer(this.state, apid)
+          this.broadcastState()
+        }
+        break
+      }
       case 'TOGGLE_SPECTATOR': {
         const pid = this.connPid.get(conn.connectionId)
         if (pid && this.state.handNumber === 0) {
@@ -292,6 +301,7 @@ export class PeerHostTransport implements Transport {
     const broadcast: ServerMessage = { type: 'DEV_PING_BROADCAST', playerName }
     this.conns.forEach((c) => { if (c.open) c.send(broadcast) })
   }
+  abandon() { /* host cannot abandon */ }
   leave() { this.conns.forEach((c) => c.close()); this.peer.destroy() }
 }
 
@@ -372,6 +382,7 @@ export class PeerGuestTransport implements Transport {
   nextHand()         { this.send({ type: 'NEXT_HAND' }) }
   revealCard()       { this.send({ type: 'REVEAL_CARD' }) }
   toggleSpectator()  { this.send({ type: 'TOGGLE_SPECTATOR' }) }
+  abandon()          { this.send({ type: 'ABANDON' }) }
   devPing(playerName: string) {
     devLog('info', `[PeerGuest] sending DEV_PING: ${playerName}`)
     this.send({ type: 'DEV_PING', playerName })
