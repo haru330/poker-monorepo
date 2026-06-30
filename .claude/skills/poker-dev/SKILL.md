@@ -21,12 +21,16 @@ Exception: pure bug fixes with a clear reproduction — skip grill-me, go straig
 
 The deployed app is on Vercel. The dev server runs locally. Before claiming anything works or is broken:
 
-1. Open the actual page with the browser agent
+1. Launch the browser in **headed mode** so the user can see what you are doing:
+   ```
+   open http://localhost:5173 --headed
+   ```
+   Use the actual port the dev server is running on. Always `--headed` — never headless.
 2. Look at it with your own eyes
 3. Test the specific flow being discussed
 4. Check the browser console for errors
 
-After making a fix, open the browser again and verify the fix actually worked before replying to the user.
+After making a fix, open the browser again in headed mode and verify the fix actually worked before replying to the user.
 
 **Never say "this should work" — only say "I verified this works".**
 
