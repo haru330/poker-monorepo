@@ -229,6 +229,7 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
         onAction={(action) => transport?.sendAction(action)}
         onNextHand={() => transport?.nextHand()}
         onRevealCard={() => transport?.revealCard()}
+        onStartGame={() => transport?.startGame()}
         onBack={handleLeave}
       />
     )

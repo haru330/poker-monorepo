@@ -36,7 +36,7 @@ function makeInitialState(): GameState {
 }
 
 export function SimulatorPage({
-  onBack, myPlayerId, externalState, onAction, onNextHand, onRevealCard,
+  onBack, myPlayerId, externalState, onAction, onNextHand, onRevealCard, onStartGame,
 }: {
   onBack: () => void
   myPlayerId?: string
@@ -44,6 +44,7 @@ export function SimulatorPage({
   onAction?: (action: Action) => void
   onNextHand?: () => void
   onRevealCard?: () => void
+  onStartGame?: () => void
 }) {
   const isMultiplayer = !!externalState
   const [internalState, setInternalState] = useState<GameState | null>(null)
@@ -202,10 +203,15 @@ export function SimulatorPage({
   }
 
   function restart() {
-    setIsCalculating(true)
     setRaiseInput('')
     setLocalRevealedCount(0)
     prevCommunityCountRef.current = 0
+    if (onStartGame) {
+      setIsCalculating(true)
+      onStartGame()
+      return
+    }
+    setIsCalculating(true)
     setTimeout(() => {
       setInternalState(dealNewHand(makeInitialState()))
       setIsCalculating(false)
