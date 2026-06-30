@@ -95,6 +95,7 @@ export function SimulatorPage({
 
   // Spectators are observers only — exclude from all game display and logic
   const gamePlayers = state.players.filter((p) => !p.isSpectator)
+  const amHost = !isMultiplayer || !!state.players.find((p) => p.id === myPlayerId)?.isHost
 
   const currentPlayer = gamePlayers.find((p) => p.id === state.currentTurnPlayerId) ?? null
   const totalPot = state.pots.reduce((s, p) => s + p.amount, 0)
@@ -463,7 +464,7 @@ export function SimulatorPage({
           <div style={{ marginBottom: 10, color: '#fbbf24', fontWeight: 'bold' }}>
             Game over! {gamePlayers.find((p) => p.chips > 0)?.name ?? '—'} wins!
           </div>
-          <button onClick={restart} style={btnStyle('primary')}>Play again</button>
+          {amHost && <button onClick={restart} style={btnStyle('primary')}>Play again</button>}
         </div>
       ) : isWaiting ? (
         <div style={{ background: '#1e293b', borderRadius: 10, padding: 12, textAlign: 'center' }}>
@@ -484,12 +485,10 @@ export function SimulatorPage({
         </div>
       ) : isShowdown && revealedCount >= 5 ? (
         <div style={{ textAlign: 'center' }}>
-          {(() => {
-            const amHost = !isMultiplayer || !!state.players.find((p) => p.id === myPlayerId)?.isHost
-            return amHost
-              ? <button onClick={nextHand} style={btnStyle('primary')}>Next hand →</button>
-              : <p style={{ color: '#64748b', fontSize: 14 }}>Waiting for host to deal next hand…</p>
-          })()}
+          {amHost
+            ? <button onClick={nextHand} style={btnStyle('primary')}>Next hand →</button>
+            : <p style={{ color: '#64748b', fontSize: 14 }}>Waiting for host to deal next hand…</p>
+          }
         </div>
       ) : currentPlayer && !isMyTurn ? (
         <div style={{ background: '#1e293b', borderRadius: 12, padding: 12, textAlign: 'center', color: '#64748b', fontSize: 14 }}>
