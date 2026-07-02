@@ -5,14 +5,34 @@ import { compressSdp, decompressSdp, compressSdpToBytes, decompressSdpFromBytes 
 import { devLog } from '../devLog'
 import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 
-// Offline mode = same WiFi/hotspot, no TURN relay needed. Local candidates only.
-const RTC_CONFIG: RTCConfiguration = { iceServers: [] }
+// Offline mode = same WiFi/hotspot, but Personal Hotspot commonly uses symmetric NAT,
+// which breaks both direct connection and NAT hairpinning between two devices behind
+// it — a TURN relay is required, not optional, in that case. Metered.ca dedicated
+// credentials (not the old shared openrelay.metered.ca demo, which was unreliable).
+const turnUsername = import.meta.env.VITE_TURN_USERNAME as string | undefined
+const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined
 
-function waitForICE(pc: RTCPeerConnection): Promise<void> {
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.relay.metered.ca:80' },
+    ...(turnUsername && turnCredential
+      ? [
+          { urls: 'turn:global.relay.metered.ca:80', username: turnUsername, credential: turnCredential },
+          { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: turnUsername, credential: turnCredential },
+          { urls: 'turn:global.relay.metered.ca:443', username: turnUsername, credential: turnCredential },
+          { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: turnUsername, credential: turnCredential },
+        ]
+      : []),
+  ],
+}
+
+function waitForICE(pc: RTCPeerConnection, timeoutMs = 8000): Promise<void> {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === 'complete') { resolve(); return }
+    const timer = setTimeout(resolve, timeoutMs)
     pc.addEventListener('icegatheringstatechange', function handler() {
       if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer)
         pc.removeEventListener('icegatheringstatechange', handler)
         resolve()
       }

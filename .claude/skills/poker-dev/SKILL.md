@@ -21,18 +21,23 @@ Exception: pure bug fixes with a clear reproduction — skip grill-me, go straig
 
 The deployed app is on Vercel. The dev server runs locally. Before claiming anything works or is broken:
 
-1. Launch the browser in **headed mode** so the user can see what you are doing:
+1. Use the **`agent-browser` CLI** (installed at `/opt/homebrew/bin/agent-browser`) — this is a real automation tool that can navigate, click, type, and screenshot. It is NOT the same as the plain shell `open` command, which just launches a native browser window Claude cannot see or control. Always use `agent-browser`, never plain `open`.
    ```
-   open http://localhost:5173 --headed
+   agent-browser open http://localhost:5173 --headed
+   agent-browser snapshot -i
+   agent-browser click @eN
+   agent-browser screenshot out.png
    ```
-   Use the actual port the dev server is running on. Always `--headed` — never headless.
-2. Look at it with your own eyes
-3. Test the specific flow being discussed
-4. Check the browser console for errors
+   Use the actual port the dev server is running on. Always `--headed` — never headless — so the user can watch. If `--headed ignored: daemon already running` appears, run `agent-browser close` first, then reopen with `--headed`.
+   Run `agent-browser skills get core --full` once per session if unsure of command syntax.
+2. Look at it with your own eyes via `snapshot` / `screenshot`
+3. Test the specific flow being discussed by actually clicking/typing through it
+4. Check the dev log panel / browser console for errors
 
 After making a fix, open the browser again in headed mode and verify the fix actually worked before replying to the user.
 
 **Never say "this should work" — only say "I verified this works".**
+**Never claim you can't visually verify — `agent-browser` can. Check for it before asserting a limitation.**
 
 ## Rule 3 — No blind trust in build success
 
