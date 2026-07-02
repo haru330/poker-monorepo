@@ -27,9 +27,10 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
   const [name, setName] = useState(() => localStorage.getItem('poker-username') ?? '')
   const [manualInput, setManualInput] = useState('')
   const [showManual, setShowManual] = useState(false)
+  const [showScanner, setShowScanner] = useState(false)
   const [moneyMode, setMoneyMode] = useState<MoneyMode>(DEFAULT_MONEY_MODE)
 
-  function handleLeave() { leave(); setView('home'); setManualInput(''); setShowManual(false) }
+  function handleLeave() { leave(); setView('home'); setManualInput(''); setShowManual(false); setShowScanner(false) }
 
   const isOnlineHost = transport?.role === 'host' && qrPayload && pairing.step === 'idle'
   const isOfflineHost = transport?.role === 'host' && 'offerNext' in transport
@@ -103,7 +104,16 @@ function Screen({ onOpenSim }: { onOpenSim: () => void }) {
       />
       {name.trim() && (
         <>
-          <QRScanner onScan={(raw) => joinFromQR(raw, name.trim())} />
+          {showScanner ? (
+            <>
+              <QRScanner onScan={(raw) => joinFromQR(raw, name.trim())} />
+              <button style={{ opacity: 0.5, fontSize: 12 }} onClick={() => setShowScanner(false)}>
+                Cancel scan
+              </button>
+            </>
+          ) : (
+            <button onClick={() => setShowScanner(true)}>📷 Scan QR code</button>
+          )}
           <p style={{ opacity: 0.4, fontSize: 13, margin: 0 }}>— or enter room code (online) —</p>
           <Row>
             <input
@@ -397,6 +407,7 @@ function DevLogPanel() {
   const logs = useSyncExternalStore(subscribeDevLogs, getDevLogs)
   const bottomRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
     if (open) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -406,6 +417,20 @@ function DevLogPanel() {
     info: '#94a3b8', warn: '#fbbf24', error: '#f87171', debug: '#64748b',
   }
 
+  async function copyLogs() {
+    const text = (logs as readonly LogEntry[])
+      .map((e) => `${new Date(e.ts).toISOString()} ${e.level.toUpperCase()} ${e.msg}`)
+      .join('\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard API unavailable (e.g. non-HTTPS) — fall back to a prompt so the text is still selectable
+      window.prompt('Copy dev log:', text)
+    }
+  }
+
   return (
     <div style={{ width: '100%', maxWidth: 500, marginTop: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
@@ -413,9 +438,14 @@ function DevLogPanel() {
           {open ? 'Hide' : 'Show'} dev log ({logs.length})
         </button>
         {open && (
-          <button style={{ fontSize: 11, opacity: 0.4, padding: '2px 8px' }} onClick={clearDevLogs}>
-            Clear
-          </button>
+          <Row>
+            <button style={{ fontSize: 11, opacity: 0.4, padding: '2px 8px' }} onClick={copyLogs}>
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+            <button style={{ fontSize: 11, opacity: 0.4, padding: '2px 8px' }} onClick={clearDevLogs}>
+              Clear
+            </button>
+          </Row>
         )}
       </div>
       {open && (
