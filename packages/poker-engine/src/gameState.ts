@@ -390,12 +390,23 @@ export function abandonPlayer(state: GameState, playerId: string): GameState {
   if (s.currentTurnPlayerId === playerId) {
     s = applyAction(s, { playerId, type: 'fold' })
   }
-  // Zero chips and disconnect — excluded from all future hands
-  const players = s.players.map((p) =>
-    p.id === playerId
-      ? { ...p, chips: 0, status: 'disconnected' as const, hasFolded: true, hasActed: true }
-      : p
-  )
+  // Distribute abandoned player's remaining chips equally among active players
+  // so total chip count stays conserved and billing remains correct
+  const abandoningPlayer = s.players.find((p) => p.id === playerId)
+  const remainingChips = abandoningPlayer?.chips ?? 0
+  const activeOthers = s.players.filter((p) => p.id !== playerId && p.status === 'connected' && p.chips > 0)
+  const share = activeOthers.length > 0 ? Math.floor(remainingChips / activeOthers.length) : 0
+  const activeOtherIds = new Set(activeOthers.map((p) => p.id))
+
+  const players = s.players.map((p) => {
+    if (p.id === playerId) {
+      return { ...p, chips: 0, status: 'disconnected' as const, hasFolded: true, hasActed: true }
+    }
+    if (activeOtherIds.has(p.id)) {
+      return { ...p, chips: p.chips + share }
+    }
+    return p
+  })
   return advance({ ...s, players })
 }
 

@@ -5,14 +5,22 @@ import { compressSdp, decompressSdp, compressSdpToBytes, decompressSdpFromBytes 
 import { devLog } from '../devLog'
 import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 
-// Offline mode = same WiFi/hotspot, no TURN relay needed. Local candidates only.
-const RTC_CONFIG: RTCConfiguration = { iceServers: [] }
+// Offline mode = same WiFi/hotspot. STUN gives real srflx IPs so iOS mDNS obfuscation
+// doesn't break connections on Personal Hotspot. No TURN relay — traffic stays local.
+const RTC_CONFIG: RTCConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ],
+}
 
-function waitForICE(pc: RTCPeerConnection): Promise<void> {
+function waitForICE(pc: RTCPeerConnection, timeoutMs = 5000): Promise<void> {
   return new Promise((resolve) => {
     if (pc.iceGatheringState === 'complete') { resolve(); return }
+    const timer = setTimeout(resolve, timeoutMs)
     pc.addEventListener('icegatheringstatechange', function handler() {
       if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer)
         pc.removeEventListener('icegatheringstatechange', handler)
         resolve()
       }
