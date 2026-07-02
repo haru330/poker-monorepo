@@ -6,11 +6,23 @@ import { devLog } from '../devLog'
 import { createPlayer, INITIAL_STATE, filterStateForPlayer } from './utils'
 
 // Offline mode = same WiFi/hotspot. STUN gives real srflx IPs so iOS mDNS obfuscation
-// doesn't break connections on Personal Hotspot. No TURN relay — traffic stays local.
+// doesn't break connections. TURN is a fallback only — direct is still tried first —
+// because Personal Hotspot often uses symmetric/carrier-grade NAT where STUN alone
+// can't establish a direct path even though both devices are on the same network.
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
 }
 
